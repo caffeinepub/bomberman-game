@@ -649,7 +649,7 @@ export default function App() {
             id: gs.bombIdCounter++,
             tx,
             ty,
-            placedAt: Date.now(),
+            placedAt: performance.now(),
             range: gs.player.explosionRange,
           });
         }
