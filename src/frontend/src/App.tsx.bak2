@@ -3,34 +3,898 @@ import { Input } from "@/components/ui/input";
 import { useActor } from "@/hooks/useActor";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import {
-  BOMB_FUSE,
-  DIRS,
-  ENEMY_DIR_CHANGE_INTERVAL,
-  PROJECTILE_SPEED,
-  TILE,
-  randomDir,
-  tileCenter,
-} from "./game/constants";
-import { detonateBomb, isWalkable } from "./game/gameLogic";
-import { getLevelConfig } from "./game/levelConfig";
-import { initLevel } from "./game/levelInit";
-import { drawGame } from "./game/renderer";
-import { getTheme } from "./game/themes";
-import type {
-  BombType,
-  ChallengeFlag,
-  GameState,
-  GameStatus,
-  LevelModifier,
-  Screen,
-} from "./game/types";
+// ─── Constants ────────────────────────────────────────────────────────────────
+const TILE = 44;
+const BOMB_FUSE = 2000;
+const EXPLOSION_DURATION = 500;
+const ENEMY_DIR_CHANGE_INTERVAL = 1500;
+const PROJECTILE_SPEED = 200;
 
+const TILE_EMPTY = 0;
+const TILE_SOLID = 1;
+const TILE_BREAKABLE = 2;
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+type PowerUpType =
+  | "FireUp"
+  | "BombUp"
+  | "SpeedUp"
+  | "Shield"
+  | "Life"
+  | "Curse"
+  | "FuseUp"
+  | "FuseDown";
+type EnemyType =
+  | "patrol"
+  | "fast"
+  | "chaser"
+  | "wallpasser"
+  | "splitter"
+  | "shooter"
+  | "bomber"
+  | "splitter2";
+type GameStatus = "playing" | "gameover" | "levelcomplete" | "win";
+type Screen = "picker" | "game";
+type LevelModifier = "fogOfWar" | "windy" | "dark" | null;
+type ChallengeFlag = "noBombUp" | "noFireUp" | "curseOnly";
+
+interface Vec2 {
+  x: number;
+  y: number;
+}
+
+interface Player {
+  tx: number;
+  ty: number;
+  px: number;
+  py: number;
+  moving: boolean;
+  moveProgress: number;
+  fromPx: number;
+  fromPy: number;
+  alive: boolean;
+  lives: number;
+  maxBombs: number;
+  explosionRange: number;
+  speedMultiplier: number;
+  shieldActive: boolean;
+  shieldTimer: number;
+  invincible: boolean;
+  invincibleTimer: number;
+  bombFuseLevel: number;
+}
+
+interface Enemy {
+  id: number;
+  tx: number;
+  ty: number;
+  px: number;
+  py: number;
+  moving: boolean;
+  moveProgress: number;
+  fromPx: number;
+  fromPy: number;
+  dx: number;
+  dy: number;
+  alive: boolean;
+  dirChangeTimer: number;
+  type: EnemyType;
+  shootTimer: number;
+  canPassWalls: boolean;
+  generation: number;
+  speed: number;
+  bombTimer: number;
+  ownBombIds: number[];
+  invincibleUntil?: number;
+  bombRange?: number;
+  bombInterval?: number;
+}
+
+interface Bomb {
+  id: number;
+  tx: number;
+  ty: number;
+  placedAt: number;
+  range: number;
+  hasDrifted: boolean;
+  fuseMs: number;
+}
+
+interface Explosion {
+  id: number;
+  cells: Vec2[];
+  startedAt: number;
+}
+
+interface PowerUp {
+  id: number;
+  tx: number;
+  ty: number;
+  type: PowerUpType;
+}
+
+interface Portal {
+  tx: number;
+  ty: number;
+  visible: boolean;
+}
+
+interface Projectile {
+  id: number;
+  px: number;
+  py: number;
+  dx: number;
+  dy: number;
+  speed: number;
+  alive: boolean;
+}
+
+interface Spawner {
+  id: number;
+  tx: number;
+  ty: number;
+  nextSpawnAt: number;
+  alive: boolean;
+}
+
+interface GameState {
+  cols: number;
+  rows: number;
+  map: number[][];
+  player: Player;
+  enemies: Enemy[];
+  bombs: Bomb[];
+  explosions: Explosion[];
+  powerUps: PowerUp[];
+  portal: Portal | null;
+  portalTilePos: Vec2 | null;
+  projectiles: Projectile[];
+  score: number;
+  level: number;
+  status: GameStatus;
+  bombIdCounter: number;
+  explosionIdCounter: number;
+  powerUpIdCounter: number;
+  projectileIdCounter: number;
+  enemyIdCounter: number;
+  lastTime: number;
+  // New fields
+  levelModifier: LevelModifier;
+  challengeFlags: ChallengeFlag[];
+  timerMs: number | null;
+  timerActive: boolean;
+  fillPhase: number;
+  fillTimer: number;
+  windDir: Vec2 | null;
+  lavaTiles: Set<string>;
+  spawners: Spawner[];
+}
+
+// ─── Level Themes ─────────────────────────────────────────────────────────────
+interface ThemeColors {
+  floor: string;
+  floor2: string;
+  solid: string;
+  solidEdge: string;
+  breakable: string;
+  breakableEdge: string;
+  accent: string;
+  portalInner: string;
+  portalOuter: string;
+  overlayBg: string;
+  uiAccent: string;
+  lavaColor: string;
+}
+
+const THEMES: Record<string, ThemeColors> = {
+  grasslands: {
+    floor: "#0d1a0d",
+    floor2: "#0f200f",
+    solid: "#1a3a1a",
+    solidEdge: "#2d5a2d",
+    breakable: "#3a2a0d",
+    breakableEdge: "#7a5a1a",
+    accent: "#7fffb0",
+    portalInner: "#00ff80",
+    portalOuter: "#005530",
+    overlayBg: "rgba(0,10,0,0.85)",
+    uiAccent: "#7fffb0",
+    lavaColor: "#4CAF50",
+  },
+  desert: {
+    floor: "#1a1200",
+    floor2: "#201600",
+    solid: "#3a2a00",
+    solidEdge: "#6a4a10",
+    breakable: "#4a3000",
+    breakableEdge: "#aa7a20",
+    accent: "#ffd700",
+    portalInner: "#ffaa00",
+    portalOuter: "#553300",
+    overlayBg: "rgba(10,8,0,0.85)",
+    uiAccent: "#ffd700",
+    lavaColor: "#FF9800",
+  },
+  ice: {
+    floor: "#0a1220",
+    floor2: "#0d1a30",
+    solid: "#1a3050",
+    solidEdge: "#2a5080",
+    breakable: "#1a2a40",
+    breakableEdge: "#3a6a9a",
+    accent: "#80d8ff",
+    portalInner: "#00aaff",
+    portalOuter: "#001133",
+    overlayBg: "rgba(0,5,15,0.85)",
+    uiAccent: "#80d8ff",
+    lavaColor: "#64B5F6",
+  },
+  lava: {
+    floor: "#1a0800",
+    floor2: "#200a00",
+    solid: "#3a1800",
+    solidEdge: "#6a2800",
+    breakable: "#4a1a00",
+    breakableEdge: "#aa3800",
+    accent: "#ff6600",
+    portalInner: "#ff4400",
+    portalOuter: "#550000",
+    overlayBg: "rgba(10,0,0,0.85)",
+    uiAccent: "#ff6600",
+    lavaColor: "#FF5722",
+  },
+  space: {
+    floor: "#020208",
+    floor2: "#030310",
+    solid: "#0a0a1a",
+    solidEdge: "#1a1a3a",
+    breakable: "#0d0d20",
+    breakableEdge: "#3030a0",
+    accent: "#cc88ff",
+    portalInner: "#aa44ff",
+    portalOuter: "#220033",
+    overlayBg: "rgba(2,0,8,0.88)",
+    uiAccent: "#cc88ff",
+    lavaColor: "#9C27B0",
+  },
+};
+
+function getTheme(level: number): ThemeColors {
+  if (level === 1) return THEMES.grasslands;
+  if (level === 2) return THEMES.desert;
+  if (level === 3) return THEMES.ice;
+  if (level === 4) return THEMES.lava;
+  // Levels 5+ cycle through all themes
+  const themeNames = ["space", "lava", "ice", "desert", "grasslands"];
+  return THEMES[themeNames[(level - 5) % themeNames.length]];
+}
+
+// ─── Level Config ─────────────────────────────────────────────────────────────
+interface LevelConfig {
+  enemyCount: number;
+  enemyTypes: EnemyType[];
+  themeName: string;
+}
+
+function getLevelConfig(level: number): LevelConfig {
+  if (level === 1)
+    return {
+      enemyCount: 2,
+      enemyTypes: ["patrol", "patrol"],
+      themeName: "grasslands",
+    };
+  if (level === 2)
+    return {
+      enemyCount: 3,
+      enemyTypes: ["fast", "fast", "patrol"],
+      themeName: "desert",
+    };
+  if (level === 3)
+    return {
+      enemyCount: 4,
+      enemyTypes: ["chaser", "chaser", "fast", "patrol"],
+      themeName: "ice",
+    };
+  if (level === 4)
+    return {
+      enemyCount: 5,
+      enemyTypes: ["wallpasser", "wallpasser", "chaser", "fast", "patrol"],
+      themeName: "lava",
+    };
+  // Level 5+
+  const extra = level - 5;
+  const types: EnemyType[] =
+    level >= 11
+      ? ["splitter", "splitter2", "shooter", "chaser", "wallpasser", "fast"]
+      : ["shooter", "chaser", "wallpasser", "fast"];
+  const count = 6 + extra;
+  const enemyTypes: EnemyType[] = [];
+  for (let i = 0; i < count; i++) enemyTypes.push(types[i % types.length]);
+  // Bomber minion appears on levels 10, 20, 30...
+  if (level % 10 === 0) {
+    enemyTypes.push("bomber");
+  }
+  const finalCount = enemyTypes.length;
+  return { enemyCount: finalCount, enemyTypes, themeName: "space" };
+}
+
+function enemySpeed(type: EnemyType): number {
+  switch (type) {
+    case "patrol":
+      return 2.0;
+    case "fast":
+      return 3.5;
+    case "chaser":
+      return 2.5;
+    case "wallpasser":
+      return 2.0;
+    case "splitter":
+      return 1.8;
+    case "shooter":
+      return 1.5;
+    case "bomber":
+      return 1.5;
+    case "splitter2":
+      return 2.2;
+  }
+}
+
+const DIRS: Vec2[] = [
+  { x: 0, y: -1 },
+  { x: 0, y: 1 },
+  { x: -1, y: 0 },
+  { x: 1, y: 0 },
+];
+
+function randomDir(): Vec2 {
+  return DIRS[Math.floor(Math.random() * 4)];
+}
+
+function tileCenter(tx: number, ty: number): Vec2 {
+  return { x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2 };
+}
+
+// ─── Level Modifier Assignment ────────────────────────────────────────────────
+function assignLevelModifier(level: number): LevelModifier {
+  if (level <= 4) return null;
+  if (level <= 6) {
+    if (Math.random() < 0.5) return null;
+  }
+  const mods: LevelModifier[] = [null, null, "fogOfWar", "windy", "dark"];
+  return mods[Math.floor(Math.random() * mods.length)];
+}
+
+function assignChallengeFlags(level: number): ChallengeFlag[] {
+  if (level < 7) return [];
+  const isTimed = getTimerForLevel(level) !== null;
+  const all: ChallengeFlag[] = isTimed
+    ? ["noBombUp", "noFireUp"]
+    : ["noBombUp", "noFireUp", "curseOnly"];
+  const shuffled = [...all].sort(() => Math.random() - 0.5);
+  if (level >= 10) return shuffled.slice(0, 2);
+  return shuffled.slice(0, 1);
+}
+
+// ─── Map Building ─────────────────────────────────────────────────────────────
+function buildMap(
+  cols: number,
+  rows: number,
+  level: number,
+): { map: number[][]; portalTilePos: Vec2 | null } {
+  const density = Math.min(0.35 + (level - 1) * 0.04, 0.7);
+  const map: number[][] = [];
+
+  for (let row = 0; row < rows; row++) {
+    map[row] = [];
+    for (let col = 0; col < cols; col++) {
+      if (row === 0 || row === rows - 1 || col === 0 || col === cols - 1) {
+        map[row][col] = TILE_SOLID;
+      } else if (row % 2 === 0 && col % 2 === 0) {
+        map[row][col] = TILE_SOLID;
+      } else {
+        map[row][col] = Math.random() < density ? TILE_BREAKABLE : TILE_EMPTY;
+      }
+    }
+  }
+
+  // Safe zones around player spawn (1,1) and common enemy spawns
+  const safeZones: Vec2[] = [
+    { x: 1, y: 1 },
+    { x: 2, y: 1 },
+    { x: 1, y: 2 },
+    { x: 3, y: 1 },
+    { x: 1, y: 3 },
+    { x: cols - 2, y: rows - 2 },
+    { x: cols - 3, y: rows - 2 },
+    { x: cols - 2, y: rows - 3 },
+    { x: cols - 2, y: 1 },
+    { x: cols - 3, y: 1 },
+    { x: cols - 2, y: 2 },
+    { x: 1, y: rows - 2 },
+    { x: 2, y: rows - 2 },
+    { x: 1, y: rows - 3 },
+  ];
+  for (const { x, y } of safeZones) {
+    if (x >= 0 && x < cols && y >= 0 && y < rows) map[y][x] = TILE_EMPTY;
+  }
+
+  // Find breakable tiles for portal (not in safe zones)
+  const breakables: Vec2[] = [];
+  for (let row = 1; row < rows - 1; row++) {
+    for (let col = 1; col < cols - 1; col++) {
+      if (map[row][col] === TILE_BREAKABLE) {
+        const isSafe = safeZones.some((s) => s.x === col && s.y === row);
+        if (!isSafe) breakables.push({ x: col, y: row });
+      }
+    }
+  }
+
+  let portalTilePos: Vec2 | null = null;
+  if (breakables.length > 0) {
+    portalTilePos = breakables[Math.floor(Math.random() * breakables.length)];
+  }
+
+  return { map, portalTilePos };
+}
+
+// ─── Enemy Spawning ───────────────────────────────────────────────────────────
+function makeEnemies(
+  cols: number,
+  rows: number,
+  config: LevelConfig,
+  startId: number,
+): Enemy[] {
+  const positions: Vec2[] = [
+    { x: cols - 2, y: rows - 2 },
+    { x: cols - 2, y: 1 },
+    { x: 1, y: rows - 2 },
+    { x: Math.floor(cols / 2), y: Math.floor(rows / 2) },
+    { x: cols - 4, y: 3 },
+    { x: 3, y: rows - 4 },
+    { x: Math.floor(cols / 3), y: 3 },
+    { x: cols - 4, y: rows - 4 },
+  ];
+
+  const enemies: Enemy[] = [];
+  for (let i = 0; i < config.enemyCount; i++) {
+    const pos = positions[i % positions.length];
+    const type = config.enemyTypes[i % config.enemyTypes.length];
+    const c = tileCenter(pos.x, pos.y);
+    const d = randomDir();
+    enemies.push({
+      id: startId + i,
+      tx: pos.x,
+      ty: pos.y,
+      px: c.x,
+      py: c.y,
+      moving: false,
+      moveProgress: 0,
+      fromPx: c.x,
+      fromPy: c.y,
+      dx: d.x,
+      dy: d.y,
+      alive: true,
+      dirChangeTimer: ENEMY_DIR_CHANGE_INTERVAL * (0.5 + Math.random()),
+      type,
+      shootTimer: 3000 * (0.5 + Math.random()),
+      canPassWalls: type === "wallpasser",
+      generation: 0,
+      speed: enemySpeed(type),
+      bombTimer: 5000,
+      ownBombIds: [],
+      bombRange: type === "bomber" ? 2 : undefined,
+      bombInterval: type === "bomber" ? 5000 : undefined,
+    });
+  }
+  return enemies;
+}
+
+// ─── Init / Level ─────────────────────────────────────────────────────────────
+// ALWAYS resets stats; only carry over lives from prevPlayer
+function makePlayer(prevPlayer?: Player): Player {
+  const c = tileCenter(1, 1);
+  return {
+    tx: 1,
+    ty: 1,
+    px: c.x,
+    py: c.y,
+    moving: false,
+    moveProgress: 0,
+    fromPx: c.x,
+    fromPy: c.y,
+    alive: true,
+    lives: prevPlayer ? prevPlayer.lives : 3,
+    // Stats always reset
+    maxBombs: 1,
+    explosionRange: 2,
+    speedMultiplier: 1,
+    shieldActive: false,
+    shieldTimer: 0,
+    invincible: false,
+    invincibleTimer: 0,
+    bombFuseLevel: 0,
+  };
+}
+
+function getTimerForLevel(level: number): number | null {
+  if (level % 3 !== 0) return null;
+  const cycle = Math.floor(level / 3);
+  return Math.max(20000, 60000 - (cycle - 1) * 3000);
+}
+
+function initLevel(
+  cols: number,
+  rows: number,
+  level: number,
+  prevPlayer?: Player,
+): GameState {
+  const config = getLevelConfig(level);
+  const { map, portalTilePos } = buildMap(cols, rows, level);
+  const player = makePlayer(prevPlayer);
+  const enemies = makeEnemies(cols, rows, config, 0);
+  const levelModifier = assignLevelModifier(level);
+  const challengeFlags = assignChallengeFlags(level);
+  const timerMs = getTimerForLevel(level);
+  const windDir = levelModifier === "windy" ? randomDir() : null;
+
+  // Place spawner for levels 15, 25, 35...
+  const spawners: Spawner[] = [];
+  if (level >= 15 && (level - 5) % 10 === 0) {
+    // Find breakable tiles not adjacent to player start (top-left) and not portal
+    const candidates: Vec2[] = [];
+    for (let ty = 0; ty < rows; ty++) {
+      for (let tx = 0; tx < cols; tx++) {
+        if (map[ty][tx] !== TILE_BREAKABLE) continue;
+        if (portalTilePos && portalTilePos.x === tx && portalTilePos.y === ty)
+          continue;
+        // Avoid top-left start area (first 3x3 tiles)
+        if (tx <= 2 && ty <= 2) continue;
+        candidates.push({ x: tx, y: ty });
+      }
+    }
+    if (candidates.length > 0) {
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      map[pick.y][pick.x] = TILE_EMPTY; // spawner replaces the breakable wall
+      spawners.push({
+        id: 0,
+        tx: pick.x,
+        ty: pick.y,
+        nextSpawnAt: performance.now() + 30000,
+        alive: true,
+      });
+    }
+  }
+
+  return {
+    cols,
+    rows,
+    map,
+    player,
+    enemies,
+    bombs: [],
+    explosions: [],
+    powerUps: [],
+    portal: null,
+    portalTilePos,
+    projectiles: [],
+    score: 0,
+    level,
+    status: "playing",
+    bombIdCounter: 0,
+    explosionIdCounter: 0,
+    powerUpIdCounter: 0,
+    projectileIdCounter: 0,
+    enemyIdCounter: enemies.length,
+    lastTime: 0,
+    levelModifier,
+    challengeFlags,
+    timerMs,
+    timerActive: timerMs !== null,
+    fillPhase: 0,
+    fillTimer: 0,
+    windDir,
+    lavaTiles: new Set<string>(),
+    spawners,
+  };
+}
+
+// ─── Game Logic Helpers ───────────────────────────────────────────────────────
+function isWalkable(
+  map: number[][],
+  cols: number,
+  rows: number,
+  tx: number,
+  ty: number,
+  canPassBreakable = false,
+): boolean {
+  if (tx < 0 || tx >= cols || ty < 0 || ty >= rows) return false;
+  const t = map[ty][tx];
+  if (t === TILE_SOLID) return false;
+  if (t === TILE_BREAKABLE && !canPassBreakable) return false;
+  return true;
+}
+
+function dropPowerUp(gs: GameState, tx: number, ty: number) {
+  if (Math.random() >= 0.7) return;
+  const { challengeFlags } = gs;
+  const hasCurseOnly = challengeFlags.includes("curseOnly");
+  const noFireUp = challengeFlags.includes("noFireUp");
+  const noBombUp = challengeFlags.includes("noBombUp");
+
+  let type: PowerUpType;
+  const roll = Math.random();
+
+  if (hasCurseOnly) {
+    // 60% chance of Curse, rest normal
+    if (roll < 0.6) {
+      type = "Curse";
+    } else {
+      const r2 = Math.random();
+      if (r2 < 0.3) type = "SpeedUp";
+      else if (r2 < 0.6) type = "Shield";
+      else type = "Life";
+    }
+  } else {
+    // Check 15% base curse chance
+    if (roll < 0.15) {
+      type = "Curse";
+    } else if (roll < 0.35 && !noFireUp) {
+      type = "FireUp";
+    } else if (roll < 0.5 && !noBombUp) {
+      type = "BombUp";
+    } else if (roll < 0.65) {
+      type = "SpeedUp";
+    } else if (roll < 0.8) {
+      type = "Shield";
+    } else if (roll < 0.85) {
+      type = "FuseUp";
+    } else if (roll < 0.95) {
+      type = "FuseDown";
+    } else {
+      // If blocked types, pick from remaining
+      if (noFireUp && noBombUp) {
+        const choices: PowerUpType[] = ["SpeedUp", "Shield", "Life", "Curse"];
+        type = choices[Math.floor(Math.random() * choices.length)];
+      } else if (noFireUp) {
+        const choices: PowerUpType[] = ["BombUp", "SpeedUp", "Shield", "Life"];
+        type = choices[Math.floor(Math.random() * choices.length)];
+      } else if (noBombUp) {
+        const choices: PowerUpType[] = ["FireUp", "SpeedUp", "Shield", "Life"];
+        type = choices[Math.floor(Math.random() * choices.length)];
+      } else {
+        type = "Life";
+      }
+    }
+  }
+
+  const already = gs.powerUps.some((p) => p.tx === tx && p.ty === ty);
+  if (!already) {
+    gs.powerUps.push({ id: gs.powerUpIdCounter++, tx, ty, type });
+  }
+}
+
+function detonateBomb(
+  gs: GameState,
+  bomb: Bomb,
+  now: number,
+  visitedIds: Set<number>,
+  onLifeLost: () => void,
+  onLevelComplete: () => void,
+) {
+  if (visitedIds.has(bomb.id)) return;
+  visitedIds.add(bomb.id);
+
+  gs.bombs = gs.bombs.filter((b) => b.id !== bomb.id);
+
+  const { cols, rows, map } = gs;
+  const cells: Vec2[] = [{ x: bomb.tx, y: bomb.ty }];
+
+  for (const dir of DIRS) {
+    for (let r = 1; r <= bomb.range; r++) {
+      const cx = bomb.tx + dir.x * r;
+      const cy = bomb.ty + dir.y * r;
+      if (cx < 0 || cx >= cols || cy < 0 || cy >= rows) break;
+      const t = map[cy][cx];
+      if (t === TILE_SOLID) break;
+      cells.push({ x: cx, y: cy });
+      if (t === TILE_BREAKABLE) {
+        map[cy][cx] = TILE_EMPTY;
+        gs.score += 10;
+        // Check portal
+        if (
+          gs.portalTilePos &&
+          gs.portalTilePos.x === cx &&
+          gs.portalTilePos.y === cy
+        ) {
+          gs.portal = { tx: cx, ty: cy, visible: false };
+        } else {
+          dropPowerUp(gs, cx, cy);
+        }
+        break;
+      }
+    }
+  }
+
+  gs.explosions.push({ id: gs.explosionIdCounter++, cells, startedAt: now });
+
+  // Kill/damage player
+  const playerInBlast = cells.some(
+    (c) => c.x === gs.player.tx && c.y === gs.player.ty,
+  );
+  if (playerInBlast && gs.player.alive && !gs.player.invincible) {
+    if (gs.player.shieldActive) {
+      gs.player.shieldActive = false;
+      gs.player.shieldTimer = 0;
+      gs.player.invincible = true;
+      gs.player.invincibleTimer = 3000;
+    } else {
+      gs.player.lives -= 1;
+      if (gs.player.lives <= 0) {
+        gs.player.alive = false;
+        gs.status = "gameover";
+      } else {
+        gs.player.invincible = true;
+        gs.player.invincibleTimer = 3000;
+        const c = tileCenter(1, 1);
+        gs.player.tx = 1;
+        gs.player.ty = 1;
+        gs.player.px = c.x;
+        gs.player.py = c.y;
+        gs.player.fromPx = c.x;
+        gs.player.fromPy = c.y;
+        gs.player.moving = false;
+        onLifeLost();
+      }
+    }
+  }
+
+  // Kill enemies
+  for (const enemy of gs.enemies) {
+    if (!enemy.alive) continue;
+    // Bomber is immune to its own bombs
+    if (
+      enemy.type === "bomber" &&
+      enemy.ownBombIds &&
+      enemy.ownBombIds.includes(bomb.id)
+    )
+      continue;
+    if (enemy.invincibleUntil && enemy.invincibleUntil > now) continue;
+    if (cells.some((c) => c.x === enemy.tx && c.y === enemy.ty)) {
+      enemy.alive = false;
+      gs.score += 50;
+      // +30 sec bonus for each enemy killed on timed levels
+      if (gs.timerActive && gs.timerMs !== null) {
+        gs.timerMs += 30000;
+      }
+      // Splitter spawns 2 children
+      if (enemy.type === "splitter" && enemy.generation === 0) {
+        for (let s = 0; s < 2; s++) {
+          const c = tileCenter(enemy.tx, enemy.ty);
+          const d = randomDir();
+          gs.enemies.push({
+            id: gs.enemyIdCounter++,
+            tx: enemy.tx,
+            ty: enemy.ty,
+            px: c.x,
+            py: c.y,
+            moving: false,
+            moveProgress: 0,
+            fromPx: c.x,
+            fromPy: c.y,
+            dx: d.x,
+            dy: d.y,
+            alive: true,
+            dirChangeTimer: ENEMY_DIR_CHANGE_INTERVAL * Math.random(),
+            type: "patrol",
+            shootTimer: 3000,
+            canPassWalls: false,
+            generation: 1,
+            speed: 2.5,
+            bombTimer: 5000,
+            ownBombIds: [],
+            invincibleUntil: performance.now() + 2500,
+          });
+        }
+      }
+      // Splitter2 always splits into 2 fast patrol enemies
+      if (enemy.type === "splitter2") {
+        for (let s = 0; s < 2; s++) {
+          const c = tileCenter(enemy.tx, enemy.ty);
+          const d = randomDir();
+          gs.enemies.push({
+            id: gs.enemyIdCounter++,
+            tx: enemy.tx + (s === 0 ? 0 : 1),
+            ty: enemy.ty,
+            px: c.x + (s === 0 ? 0 : TILE),
+            py: c.y,
+            moving: false,
+            moveProgress: 0,
+            fromPx: c.x,
+            fromPy: c.y,
+            dx: d.x,
+            dy: d.y,
+            alive: true,
+            dirChangeTimer: ENEMY_DIR_CHANGE_INTERVAL * Math.random(),
+            type: "patrol" as EnemyType,
+            shootTimer: 3000,
+            canPassWalls: false,
+            generation: 1,
+            speed: 2.5,
+            bombTimer: 5000,
+            ownBombIds: [],
+            invincibleUntil: performance.now() + 2500,
+          });
+        }
+      }
+    }
+  }
+
+  // Destroy projectiles in blast
+  for (const proj of gs.projectiles) {
+    if (
+      cells.some((c) => {
+        const ptx = Math.floor(proj.px / TILE);
+        const pty = Math.floor(proj.py / TILE);
+        return c.x === ptx && c.y === pty;
+      })
+    ) {
+      proj.alive = false;
+    }
+  }
+
+  // Destroy spawners in blast
+  for (const spawner of gs.spawners) {
+    if (
+      spawner.alive &&
+      cells.some((c) => c.x === spawner.tx && c.y === spawner.ty)
+    ) {
+      spawner.alive = false;
+      gs.score += 200;
+    }
+  }
+
+  // Chain reaction
+  const chainBombs = [...gs.bombs].filter((b) =>
+    cells.some((c) => c.x === b.tx && c.y === b.ty),
+  );
+  for (const cb of chainBombs) {
+    detonateBomb(gs, cb, now, visitedIds, onLifeLost, onLevelComplete);
+  }
+
+  // Check if all enemies dead -> show portal
+  const alive = gs.enemies.filter((e) => e.alive);
+  if (alive.length === 0 && gs.portal) {
+    gs.portal.visible = true;
+  }
+}
+
+// ─── Enemy color by type ──────────────────────────────────────────────────────
+function enemyColor(type: EnemyType): string {
+  switch (type) {
+    case "patrol":
+      return "#ff4d6d";
+    case "fast":
+      return "#ff8c00";
+    case "chaser":
+      return "#ff00ff";
+    case "wallpasser":
+      return "#8b0000";
+    case "splitter":
+      return "#00ff7f";
+    case "shooter":
+      return "#9400d3";
+    case "bomber":
+      return "#cc44ff";
+    case "splitter2":
+      return "#ff6633";
+  }
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gsRef = useRef<GameState | null>(null);
   const keysRef = useRef<Set<string>>(new Set());
-  const keyOrderRef = useRef<string[]>([]);
   const rafRef = useRef<number>(0);
   const { actor } = useActor();
 
@@ -57,7 +921,6 @@ export default function App() {
   const [displayModifier, setDisplayModifier] = useState<LevelModifier>(null);
   const [displayChallenge, setDisplayChallenge] = useState<ChallengeFlag[]>([]);
   const [displayCurseFlash, setDisplayCurseFlash] = useState(false);
-  const [displayBombType, setDisplayBombType] = useState<BombType>("normal");
 
   useEffect(() => {
     const savedBest = localStorage.getItem("bomberman_best_score");
@@ -118,6 +981,7 @@ export default function App() {
     const gs = gsRef.current;
     if (!gs) return;
     const nextLevel = gs.level + 1;
+    // Only pass prevPlayer for lives, stats reset in makePlayer
     const newGs = initLevel(gs.cols, gs.rows, nextLevel, gs.player);
     newGs.score = gs.score;
     gsRef.current = newGs;
@@ -134,6 +998,7 @@ export default function App() {
     async (score: number) => {
       setGameStatus("gameover");
       setFinalScore(score);
+      // Save best score/level to localStorage
       const prevBest = Number.parseInt(
         localStorage.getItem("bomberman_best_score") || "0",
         10,
@@ -167,7 +1032,7 @@ export default function App() {
     [actor],
   );
 
-  // ─── Game Loop ───────────────────────────────────────────────────────────────
+  // ─── Game Loop ──────────────────────────────────────────────────────────────
   const tick = useCallback(
     (now: number) => {
       const gs = gsRef.current;
@@ -179,19 +1044,9 @@ export default function App() {
       gs.lastTime = now;
 
       const { map, player, enemies, cols, rows } = gs;
-      const playerOnIce = gs.icePatches.some(
-        (ip) => ip.tx === player.tx && ip.ty === player.ty,
-      );
-      const playerOnSticky = gs.stickyTiles.some(
-        (st) => st.tx === player.tx && st.ty === player.ty,
-      );
-      const playerSpeed =
-        4 *
-        player.speedMultiplier *
-        (playerOnIce ? 0.1 : 1) *
-        (playerOnSticky ? 0.3 : 1);
+      const playerSpeed = 4 * player.speedMultiplier;
 
-      // Timers
+      // ── Timers ──────────────────────────────────────────────────────────────
       if (player.invincible) {
         player.invincibleTimer -= dt * 1000;
         if (player.invincibleTimer <= 0) {
@@ -207,66 +1062,75 @@ export default function App() {
         }
       }
 
-      // Level Timer & Fill
+      // ── Level Timer & Fill ──────────────────────────────────────────────────
       if (gs.timerActive && gs.timerMs !== null) {
         gs.timerMs -= dt * 1000;
         if (gs.timerMs <= 0) {
           gs.timerMs = 0;
           gs.timerActive = false;
+          // Start fill phase
           gs.fillPhase = 1;
           gs.fillTimer = 0;
         }
       }
 
+      // Fill phase: every 500ms convert border ring tiles
       if (!gs.timerActive && gs.fillPhase > 0) {
         gs.fillTimer += dt * 1000;
         if (gs.fillTimer >= 500) {
           gs.fillTimer -= 500;
+          // Convert tiles in fill wave from the border inward
           const wave = gs.fillPhase;
           for (let row = 0; row < rows; row++) {
             for (let col = 0; col < cols; col++) {
+              // Check distance from border
               const distFromBorder = Math.min(
                 row,
                 rows - 1 - row,
                 col,
                 cols - 1 - col,
               );
-              if (distFromBorder === wave - 1 && map[row][col] !== 1) {
-                const key = `${col},${row}`;
-                if (!gs.lavaTiles.has(key)) {
-                  gs.lavaTiles.add(key);
-                  map[row][col] = 1;
-                  if (
-                    player.alive &&
-                    player.tx === col &&
-                    player.ty === row &&
-                    !player.invincible
-                  ) {
-                    if (player.shieldActive) {
-                      player.shieldActive = false;
-                      player.shieldTimer = 0;
-                      player.invincible = true;
-                      player.invincibleTimer = 3000;
-                    } else {
-                      player.lives -= 1;
-                      player.invincible = true;
-                      player.invincibleTimer = 3000;
-                      if (player.lives <= 0) {
-                        player.alive = false;
-                        gs.status = "gameover";
-                        setGameStatus("gameover");
-                        setFinalScore(gs.score);
-                        onGameOver(gs.score);
-                        return;
+              if (distFromBorder === wave - 1 && map[row][col] !== TILE_SOLID) {
+                if (map[row][col] !== TILE_SOLID) {
+                  const key = `${col},${row}`;
+                  if (!gs.lavaTiles.has(key)) {
+                    gs.lavaTiles.add(key);
+                    if (map[row][col] !== TILE_SOLID) {
+                      map[row][col] = TILE_SOLID;
+                    }
+                    // Kill player if on this tile
+                    if (
+                      player.alive &&
+                      player.tx === col &&
+                      player.ty === row &&
+                      !player.invincible
+                    ) {
+                      if (player.shieldActive) {
+                        player.shieldActive = false;
+                        player.shieldTimer = 0;
+                        player.invincible = true;
+                        player.invincibleTimer = 3000;
+                      } else {
+                        player.lives -= 1;
+                        player.invincible = true;
+                        player.invincibleTimer = 3000;
+                        if (player.lives <= 0) {
+                          player.alive = false;
+                          gs.status = "gameover";
+                          setGameStatus("gameover");
+                          setFinalScore(gs.score);
+                          onGameOver(gs.score);
+                          return;
+                        }
+                        const c = tileCenter(1, 1);
+                        player.tx = 1;
+                        player.ty = 1;
+                        player.px = c.x;
+                        player.py = c.y;
+                        player.fromPx = c.x;
+                        player.fromPy = c.y;
+                        player.moving = false;
                       }
-                      const c = tileCenter(1, 1);
-                      player.tx = 1;
-                      player.ty = 1;
-                      player.px = c.x;
-                      player.py = c.y;
-                      player.fromPx = c.x;
-                      player.fromPy = c.y;
-                      player.moving = false;
                     }
                   }
                 }
@@ -274,6 +1138,7 @@ export default function App() {
             }
           }
           gs.fillPhase++;
+          // If fill covered the whole map, game over
           const maxWave = Math.min(Math.floor(cols / 2), Math.floor(rows / 2));
           if (gs.fillPhase > maxWave) {
             player.alive = false;
@@ -286,13 +1151,10 @@ export default function App() {
         }
       }
 
-      // Detonate ready bombs
+      // ── Detonate ready bombs ────────────────────────────────────────────────
       const readyBombs = gs.bombs.filter((b) => now - b.placedAt >= b.fuseMs);
       if (readyBombs.length > 0) {
         const visited = new Set<number>();
-        const wasPlayerBombs = readyBombs.filter(
-          (b) => !gs.enemies.some((e) => e.ownBombIds.includes(b.id)),
-        );
         for (const b of readyBombs) {
           detonateBomb(
             gs,
@@ -303,39 +1165,9 @@ export default function App() {
             () => {},
           );
         }
-        // Cursed bomb: 20% chance to teleport player when their bomb detonates
-        if (
-          gs.cursedBombActive &&
-          wasPlayerBombs.length > 0 &&
-          player.alive &&
-          Math.random() < 0.2
-        ) {
-          const openTiles: { tx: number; ty: number }[] = [];
-          for (let row = 1; row < rows - 1; row++) {
-            for (let col = 1; col < cols - 1; col++) {
-              if (map[row][col] !== 0) continue;
-              if (gs.bombs.some((b) => b.tx === col && b.ty === row)) continue;
-              if (gs.lavaFires.some((lf) => lf.tx === col && lf.ty === row))
-                continue;
-              openTiles.push({ tx: col, ty: row });
-            }
-          }
-          if (openTiles.length > 0) {
-            const dest =
-              openTiles[Math.floor(Math.random() * openTiles.length)];
-            const c = tileCenter(dest.tx, dest.ty);
-            player.tx = dest.tx;
-            player.ty = dest.ty;
-            player.px = c.x;
-            player.py = c.y;
-            player.fromPx = c.x;
-            player.fromPy = c.y;
-            player.moving = false;
-            gs.teleportFlashUntil = now + 300;
-          }
-        }
       }
 
+      // Handle game over triggered by explosion
       if ((gs.status as string) === "gameover") {
         setGameStatus("gameover");
         setFinalScore(gs.score);
@@ -343,7 +1175,7 @@ export default function App() {
         return;
       }
 
-      // Windy bomb drift
+      // ── Windy bomb drift ────────────────────────────────────────────────────
       if (gs.levelModifier === "windy" && gs.windDir) {
         for (const bomb of gs.bombs) {
           if (!bomb.hasDrifted && now - bomb.placedAt >= 1000) {
@@ -363,90 +1195,13 @@ export default function App() {
         }
       }
 
-      // Remove expired explosions
-      gs.explosions = gs.explosions.filter((e) => now - e.startedAt < 280);
+      // ── Remove expired explosions ───────────────────────────────────────────
+      gs.explosions = gs.explosions.filter(
+        (e) => now - e.startedAt < EXPLOSION_DURATION,
+      );
       gs.projectiles = gs.projectiles.filter((p) => p.alive);
 
-      // Lava fire logic
-      const LAVA_FIRE_DURATION = 3000;
-      gs.lavaFires = gs.lavaFires.filter(
-        (lf) => now - lf.spawnedAt < LAVA_FIRE_DURATION,
-      );
-      for (const lf of gs.lavaFires) {
-        if (map[lf.ty]?.[lf.tx] === 2) {
-          map[lf.ty][lf.tx] = 0;
-          gs.score += 10;
-          if (
-            gs.portalTilePos &&
-            gs.portalTilePos.x === lf.tx &&
-            gs.portalTilePos.y === lf.ty
-          ) {
-            gs.portal = { tx: lf.tx, ty: lf.ty, visible: false };
-          } else {
-            // Lava fire doesn't destroy items, just dropPowerUp for wall break
-            // (dropPowerUp handles item protection separately)
-          }
-        }
-        // Damage player
-        if (
-          player.alive &&
-          !player.invincible &&
-          player.tx === lf.tx &&
-          player.ty === lf.ty
-        ) {
-          const key = "player";
-          const lastDmg = gs.lavaDamageCooldown.get(key) ?? 0;
-          if (now - lastDmg >= 500) {
-            gs.lavaDamageCooldown.set(key, now);
-            if (player.shieldActive) {
-              player.shieldActive = false;
-              player.shieldTimer = 0;
-              player.invincible = true;
-              player.invincibleTimer = 3000;
-            } else {
-              player.lives -= 1;
-              if (player.lives <= 0) {
-                player.alive = false;
-                gs.status = "gameover";
-                setGameStatus("gameover");
-                setFinalScore(gs.score);
-                onGameOver(gs.score);
-                return;
-              }
-              player.invincible = true;
-              player.invincibleTimer = 3000;
-              const c2 = tileCenter(1, 1);
-              player.tx = 1;
-              player.ty = 1;
-              player.px = c2.x;
-              player.py = c2.y;
-              player.fromPx = c2.x;
-              player.fromPy = c2.y;
-              player.moving = false;
-            }
-          }
-        }
-        // Damage enemies (splitter2 and bomber are immune to lingering lava fire)
-        for (const enemy of enemies) {
-          if (!enemy.alive) continue;
-          if (enemy.type === "splitter2" || enemy.type === "bomber") continue;
-          if (enemy.tx !== lf.tx || enemy.ty !== lf.ty) continue;
-          if (enemy.invincibleUntil && enemy.invincibleUntil > now) continue;
-          const key = `enemy-${enemy.id}`;
-          const lastDmg = gs.lavaDamageCooldown.get(key) ?? 0;
-          if (now - lastDmg >= 500) {
-            gs.lavaDamageCooldown.set(key, now);
-            enemy.alive = false;
-            gs.score += 50;
-            if (gs.timerActive && gs.timerMs !== null) gs.timerMs += 30000;
-          }
-        }
-      }
-
-      // Ice patch logic
-      gs.icePatches = gs.icePatches.filter((ip) => now - ip.spawnedAt < 3000);
-
-      // Update projectiles
+      // ── Update projectiles ──────────────────────────────────────────────────
       for (const proj of gs.projectiles) {
         proj.px += proj.dx * proj.speed * dt;
         proj.py += proj.dy * proj.speed * dt;
@@ -457,10 +1212,11 @@ export default function App() {
           continue;
         }
         const tile = map[pty][ptx];
-        if (tile === 1 || tile === 2) {
+        if (tile === TILE_SOLID || tile === TILE_BREAKABLE) {
           proj.alive = false;
           continue;
         }
+        // Hit player
         if (player.alive && !player.invincible) {
           const dist = Math.hypot(proj.px - player.px, proj.py - player.py);
           if (dist < TILE * 0.4) {
@@ -495,7 +1251,7 @@ export default function App() {
         }
       }
 
-      // Player movement
+      // ── Player movement ─────────────────────────────────────────────────────
       if (player.alive) {
         if (player.moving) {
           player.moveProgress += dt * playerSpeed;
@@ -517,74 +1273,16 @@ export default function App() {
         if (!player.moving) {
           let ndx = 0;
           let ndy = 0;
-          // Last-key-wins: iterate keyOrder to find most recently pressed arrow key
-          const isMirrored = now < player.mirrorUntil;
-          for (const key of keyOrderRef.current) {
-            if (key === "ArrowUp") {
-              ndy = -1;
-              break;
-            }
-            if (key === "ArrowDown") {
-              ndy = 1;
-              break;
-            }
-            if (key === (isMirrored ? "ArrowRight" : "ArrowLeft")) {
-              ndx = -1;
-              break;
-            }
-            if (key === (isMirrored ? "ArrowLeft" : "ArrowRight")) {
-              ndx = 1;
-              break;
-            }
-          }
+          const keys = keysRef.current;
+          if (keys.has("ArrowUp")) ndy = -1;
+          else if (keys.has("ArrowDown")) ndy = 1;
+          else if (keys.has("ArrowLeft")) ndx = -1;
+          else if (keys.has("ArrowRight")) ndx = 1;
 
           if (ndx !== 0 || ndy !== 0) {
             const ntx = player.tx + ndx;
             const nty = player.ty + ndy;
-            // Check for kick bomb - if player walks into a kick bomb, slide it
-            const kickBomb = gs.bombs.find(
-              (b) =>
-                b.tx === ntx &&
-                b.ty === nty &&
-                b.bombType === "kick" &&
-                !b.sliding,
-            );
-            if (kickBomb) {
-              // Slide kick bomb until it hits an obstacle
-              let destTx = ntx;
-              let destTy = nty;
-              while (true) {
-                const nx2 = destTx + ndx;
-                const ny2 = destTy + ndy;
-                if (
-                  !isWalkable(map, cols, rows, nx2, ny2) ||
-                  gs.bombs.some(
-                    (b) => b.id !== kickBomb.id && b.tx === nx2 && b.ty === ny2,
-                  )
-                )
-                  break;
-                destTx = nx2;
-                destTy = ny2;
-              }
-              kickBomb.sliding = true;
-              kickBomb.slideDx = ndx;
-              kickBomb.slideDy = ndy;
-              kickBomb.slideProgress = 0;
-              kickBomb.slideFromTx = ntx;
-              kickBomb.slideFromTy = nty;
-              // Move bomb to destination immediately (position updated over time in slide loop)
-              kickBomb.tx = destTx;
-              kickBomb.ty = destTy;
-              // Player moves into the old bomb tile
-              if (isWalkable(map, cols, rows, ntx, nty)) {
-                player.fromPx = player.px;
-                player.fromPy = player.py;
-                player.tx = ntx;
-                player.ty = nty;
-                player.moving = true;
-                player.moveProgress = 0;
-              }
-            } else if (
+            if (
               isWalkable(map, cols, rows, ntx, nty) &&
               !gs.bombs.some((b) => b.tx === ntx && b.ty === nty)
             ) {
@@ -638,27 +1336,17 @@ export default function App() {
               gs.score += 20;
               break;
             case "Curse":
+              // Apply debuffs
               player.speedMultiplier = Math.max(
                 player.speedMultiplier - 0.3,
                 0.5,
               );
               player.explosionRange = Math.max(player.explosionRange - 1, 1);
               gs.score = Math.max(gs.score - 10, 0);
+              // Show flash in HUD
               setDisplayCurseFlash(true);
               setTimeout(() => setDisplayCurseFlash(false), 1500);
               break;
-            case "BombType": {
-              const types: BombType[] = [
-                "normal",
-                "lava",
-                "freeze",
-                "kick",
-                "portal",
-              ];
-              player.bombType = types[Math.floor(Math.random() * types.length)];
-              gs.score += 30;
-              break;
-            }
           }
         }
 
@@ -669,7 +1357,7 @@ export default function App() {
             (p) => p.tx === enemy.tx && p.ty === enemy.ty,
           );
           for (const pu of bomberPickups) {
-            if (pu.type === "Life" || pu.type === "BombType") continue;
+            if (pu.type === "Life") continue; // Bomber ignores life items
             gs.powerUps = gs.powerUps.filter((p) => p.id !== pu.id);
             switch (pu.type) {
               case "FireUp":
@@ -777,33 +1465,13 @@ export default function App() {
           setGameStatus("levelcomplete");
           return;
         }
-
-        // Teleport portal check (portal bomb portals)
-        if (gs.teleportPortals.length === 2 && !player.moving) {
-          const entered = gs.teleportPortals.find(
-            (tp) => tp.tx === player.tx && tp.ty === player.ty,
-          );
-          if (entered) {
-            const other = gs.teleportPortals.find((tp) => tp.id !== entered.id);
-            if (other) {
-              const c = tileCenter(other.tx, other.ty);
-              player.tx = other.tx;
-              player.ty = other.ty;
-              player.px = c.x;
-              player.py = c.y;
-              player.fromPx = c.x;
-              player.fromPy = c.y;
-              player.moving = false;
-              gs.teleportFlashUntil = now + 300;
-            }
-          }
-        }
       }
 
-      // Enemy AI
+      // ── Enemy AI ────────────────────────────────────────────────────────────
       for (const enemy of enemies) {
         if (!enemy.alive) continue;
 
+        // Shooter fires projectile
         if (enemy.type === "shooter") {
           enemy.shootTimer -= dt * 1000;
           if (enemy.shootTimer <= 0) {
@@ -821,11 +1489,14 @@ export default function App() {
           }
         }
 
+        // Bomber places bombs periodically
         if (enemy.type === "bomber") {
           enemy.bombTimer -= dt * 1000;
           if (enemy.bombTimer <= 0) {
             enemy.bombTimer = enemy.bombInterval ?? 5000;
-            if (!gs.bombs.some((b) => b.tx === enemy.tx && b.ty === enemy.ty)) {
+            if (
+              !gs.bombs.some((b: any) => b.tx === enemy.tx && b.ty === enemy.ty)
+            ) {
               const bombId = gs.bombIdCounter++;
               enemy.ownBombIds.push(bombId);
               gs.bombs.push({
@@ -836,7 +1507,6 @@ export default function App() {
                 range: enemy.bombRange ?? 2,
                 hasDrifted: false,
                 fuseMs: 2000,
-                bombType: "normal",
               });
             }
           }
@@ -844,43 +1514,14 @@ export default function App() {
 
         enemy.dirChangeTimer -= dt * 1000;
 
-        const enemyOnIce = gs.icePatches.some(
-          (ip) => ip.tx === enemy.tx && ip.ty === enemy.ty,
-        );
-        const enemyOnSticky = gs.stickyTiles.some(
-          (st) => st.tx === enemy.tx && st.ty === enemy.ty,
-        );
-        const effectiveEnemySpeed =
-          enemy.speed * (enemyOnIce ? 0.1 : 1) * (enemyOnSticky ? 0.3 : 1);
-
         if (enemy.moving) {
-          enemy.moveProgress += dt * effectiveEnemySpeed;
+          enemy.moveProgress += dt * enemy.speed;
           if (enemy.moveProgress >= 1) {
             enemy.moveProgress = 1;
             const tc = tileCenter(enemy.tx, enemy.ty);
             enemy.px = tc.x;
             enemy.py = tc.y;
             enemy.moving = false;
-            // Enemy teleport portal check
-            if (gs.teleportPortals.length === 2) {
-              const etp = gs.teleportPortals.find(
-                (tp) => tp.tx === enemy.tx && tp.ty === enemy.ty,
-              );
-              if (etp) {
-                const otherTp = gs.teleportPortals.find(
-                  (tp) => tp.id !== etp.id,
-                );
-                if (otherTp) {
-                  const c = tileCenter(otherTp.tx, otherTp.ty);
-                  enemy.tx = otherTp.tx;
-                  enemy.ty = otherTp.ty;
-                  enemy.px = c.x;
-                  enemy.py = c.y;
-                  enemy.fromPx = c.x;
-                  enemy.fromPy = c.y;
-                }
-              }
-            }
           } else {
             const tc = tileCenter(enemy.tx, enemy.ty);
             enemy.px =
@@ -891,10 +1532,12 @@ export default function App() {
         }
 
         if (!enemy.moving) {
+          // Pick direction
           if (enemy.dirChangeTimer <= 0) {
             enemy.dirChangeTimer =
               ENEMY_DIR_CHANGE_INTERVAL * (0.5 + Math.random());
             if (enemy.type === "chaser" && Math.random() < 0.75) {
+              // Move toward player
               const dx = player.tx - enemy.tx;
               const dy = player.ty - enemy.ty;
               if (Math.abs(dx) > Math.abs(dy)) {
@@ -924,6 +1567,7 @@ export default function App() {
             enemy.moving = true;
             enemy.moveProgress = 0;
           } else {
+            // Try random direction
             const shuffled = [...DIRS].sort(() => Math.random() - 0.5);
             let moved = false;
             for (const d of shuffled) {
@@ -954,7 +1598,7 @@ export default function App() {
         }
       }
 
-      // Update spawners
+      // ── Update spawners ────────────────────────────────────────────────────
       for (const spawner of gs.spawners) {
         if (!spawner.alive) continue;
         if (now >= spawner.nextSpawnAt) {
@@ -989,7 +1633,7 @@ export default function App() {
         }
       }
 
-      // Portal visibility check
+      // ── Check portal visibility (all enemies cleared) ───────────────────────
       if (
         gs.portal &&
         !gs.portal.visible &&
@@ -998,319 +1642,7 @@ export default function App() {
         gs.portal.visible = true;
       }
 
-      // ── Trap Tiles ──────────────────────────────────────────────────────────
-      if (gs.levelModifier === "trapTiles") {
-        for (const tt of gs.trapTiles) {
-          if (tt.triggered) {
-            // Check detonation
-            if (now - tt.triggeredAt >= 3000) {
-              // Explode in 4 cardinal directions (range 1)
-              const cells = [
-                { x: tt.tx - 1, y: tt.ty },
-                { x: tt.tx + 1, y: tt.ty },
-                { x: tt.tx, y: tt.ty - 1 },
-                { x: tt.tx, y: tt.ty + 1 },
-              ].filter(
-                (c) =>
-                  c.x >= 0 &&
-                  c.x < cols &&
-                  c.y >= 0 &&
-                  c.y < rows &&
-                  map[c.y][c.x] !== 1,
-              );
-              // Damage player
-              if (
-                player.alive &&
-                !player.invincible &&
-                cells.some((c) => c.x === player.tx && c.y === player.ty)
-              ) {
-                if (player.shieldActive) {
-                  player.shieldActive = false;
-                  player.shieldTimer = 0;
-                  player.invincible = true;
-                  player.invincibleTimer = 3000;
-                } else {
-                  player.lives -= 1;
-                  player.invincible = true;
-                  player.invincibleTimer = 3000;
-                  if (player.lives <= 0) {
-                    player.alive = false;
-                    gs.status = "gameover";
-                    setGameStatus("gameover");
-                    setFinalScore(gs.score);
-                    onGameOver(gs.score);
-                    return;
-                  }
-                  const cpos = tileCenter(1, 1);
-                  player.tx = 1;
-                  player.ty = 1;
-                  player.px = cpos.x;
-                  player.py = cpos.y;
-                  player.fromPx = cpos.x;
-                  player.fromPy = cpos.y;
-                  player.moving = false;
-                }
-              }
-              // Damage enemies
-              for (const enemy of enemies) {
-                if (!enemy.alive) continue;
-                if (enemy.invincibleUntil && enemy.invincibleUntil > now)
-                  continue;
-                if (cells.some((c) => c.x === enemy.tx && c.y === enemy.ty)) {
-                  enemy.alive = false;
-                  gs.score += 50;
-                  if (gs.timerActive && gs.timerMs !== null)
-                    gs.timerMs += 30000;
-                }
-              }
-              // Add visual explosion
-              gs.explosions.push({
-                id: gs.explosionIdCounter++,
-                cells,
-                startedAt: now,
-                bombType: "normal",
-              });
-              tt.triggered = false; // mark as dead (filter below)
-            }
-          } else {
-            // Check if player stepped on it
-            if (
-              player.tx === tt.tx &&
-              player.ty === tt.ty &&
-              !player.invincible
-            ) {
-              tt.triggered = true;
-              tt.triggeredAt = now;
-            }
-          }
-        }
-        gs.trapTiles = gs.trapTiles.filter(
-          (tt) => !(tt.triggered && now - tt.triggeredAt >= 3000),
-        );
-      }
-
-      // ── Conveyor Belts ──────────────────────────────────────────────────────
-      if (gs.levelModifier === "conveyorBelts") {
-        for (const ct of gs.conveyorTiles) {
-          // Push player
-          if (!player.moving && player.tx === ct.tx && player.ty === ct.ty) {
-            const ntx = player.tx + ct.dir.x;
-            const nty = player.ty + ct.dir.y;
-            if (
-              isWalkable(map, cols, rows, ntx, nty) &&
-              !gs.bombs.some((b) => b.tx === ntx && b.ty === nty)
-            ) {
-              player.fromPx = player.px;
-              player.fromPy = player.py;
-              player.tx = ntx;
-              player.ty = nty;
-              player.moving = true;
-              player.moveProgress = 0;
-            }
-          }
-          // Push enemies
-          for (const enemy of enemies) {
-            if (!enemy.alive || enemy.moving) continue;
-            if (enemy.tx !== ct.tx || enemy.ty !== ct.ty) continue;
-            const ntx = enemy.tx + ct.dir.x;
-            const nty = enemy.ty + ct.dir.y;
-            if (
-              isWalkable(map, cols, rows, ntx, nty, enemy.canPassWalls) &&
-              !gs.bombs.some((b) => b.tx === ntx && b.ty === nty)
-            ) {
-              enemy.fromPx = enemy.px;
-              enemy.fromPy = enemy.py;
-              enemy.tx = ntx;
-              enemy.ty = nty;
-              enemy.moving = true;
-              enemy.moveProgress = 0;
-            }
-          }
-          // Push bombs
-          for (const bomb of gs.bombs) {
-            if (bomb.tx !== ct.tx || bomb.ty !== ct.ty) continue;
-            const ntx = bomb.tx + ct.dir.x;
-            const nty = bomb.ty + ct.dir.y;
-            if (
-              isWalkable(map, cols, rows, ntx, nty) &&
-              !gs.bombs.some(
-                (b) => b.id !== bomb.id && b.tx === ntx && b.ty === nty,
-              )
-            ) {
-              bomb.tx = ntx;
-              bomb.ty = nty;
-            }
-          }
-        }
-      }
-
-      // ── Gravity Zones ───────────────────────────────────────────────────────
-      if (gs.levelModifier === "gravityZones") {
-        gs.gravityPullTimer -= dt * 1000;
-        if (gs.gravityPullTimer <= 0) {
-          gs.gravityPullTimer = 2000;
-          for (const gz of gs.gravityZones) {
-            // Pull player if within 2 tiles
-            if (player.alive && !player.moving) {
-              const dx = gz.tx - player.tx;
-              const dy = gz.ty - player.ty;
-              const dist = Math.abs(dx) + Math.abs(dy);
-              if (dist > 0 && dist <= 2) {
-                const stepX = dx !== 0 ? Math.sign(dx) : 0;
-                const stepY = dy !== 0 ? Math.sign(dy) : 0;
-                // Prefer axis with larger delta
-                const moveX = Math.abs(dx) >= Math.abs(dy) ? stepX : 0;
-                const moveY = Math.abs(dx) >= Math.abs(dy) ? 0 : stepY;
-                const ntx = player.tx + moveX;
-                const nty = player.ty + moveY;
-                if (
-                  isWalkable(map, cols, rows, ntx, nty) &&
-                  !gs.bombs.some((b) => b.tx === ntx && b.ty === nty)
-                ) {
-                  player.fromPx = player.px;
-                  player.fromPy = player.py;
-                  player.tx = ntx;
-                  player.ty = nty;
-                  player.moving = true;
-                  player.moveProgress = 0;
-                }
-              }
-            }
-            // Pull enemies
-            for (const enemy of enemies) {
-              if (!enemy.alive || enemy.moving) continue;
-              const dx = gz.tx - enemy.tx;
-              const dy = gz.ty - enemy.ty;
-              const dist = Math.abs(dx) + Math.abs(dy);
-              if (dist > 0 && dist <= 2) {
-                const moveX = Math.abs(dx) >= Math.abs(dy) ? Math.sign(dx) : 0;
-                const moveY = Math.abs(dx) >= Math.abs(dy) ? 0 : Math.sign(dy);
-                const ntx = enemy.tx + moveX;
-                const nty = enemy.ty + moveY;
-                if (
-                  isWalkable(map, cols, rows, ntx, nty, enemy.canPassWalls) &&
-                  !gs.bombs.some((b) => b.tx === ntx && b.ty === nty)
-                ) {
-                  enemy.fromPx = enemy.px;
-                  enemy.fromPy = enemy.py;
-                  enemy.tx = ntx;
-                  enemy.ty = nty;
-                  enemy.moving = true;
-                  enemy.moveProgress = 0;
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // ── Mirror Tiles ────────────────────────────────────────────────────────
-      if (gs.levelModifier === "mirrorTiles") {
-        for (const mt of gs.mirrorTiles) {
-          if (
-            player.tx === mt.tx &&
-            player.ty === mt.ty &&
-            now > player.mirrorUntil
-          ) {
-            player.mirrorUntil = now + 3000;
-          }
-        }
-      }
-
-      // ── Shrinking Arena ─────────────────────────────────────────────────────
-      if (gs.levelModifier === "shrinkingArena") {
-        if (now - gs.lastShrinkAt >= 60000) {
-          gs.lastShrinkAt = now;
-          gs.shrinkCount++;
-          // Collapse outermost non-solid tiles (border ring)
-          for (let col = 0; col < cols; col++) {
-            for (let row of [0, rows - 1]) {
-              if (map[row][col] === 0 || map[row][col] === 2) {
-                map[row][col] = 1;
-                // Kill player if in collapsing tile
-                if (
-                  player.alive &&
-                  !player.invincible &&
-                  player.tx === col &&
-                  player.ty === row
-                ) {
-                  player.lives -= 1;
-                  player.invincible = true;
-                  player.invincibleTimer = 3000;
-                  if (player.lives <= 0) {
-                    player.alive = false;
-                    gs.status = "gameover";
-                    setGameStatus("gameover");
-                    setFinalScore(gs.score);
-                    onGameOver(gs.score);
-                    return;
-                  }
-                  const cpos = tileCenter(1, 1);
-                  player.tx = 1;
-                  player.ty = 1;
-                  player.px = cpos.x;
-                  player.py = cpos.y;
-                  player.fromPx = cpos.x;
-                  player.fromPy = cpos.y;
-                  player.moving = false;
-                }
-                // Kill enemies caught in collapsing tile
-                for (const enemy of enemies) {
-                  if (enemy.alive && enemy.tx === col && enemy.ty === row) {
-                    enemy.alive = false;
-                    gs.score += 50;
-                    if (gs.timerActive && gs.timerMs !== null)
-                      gs.timerMs += 30000;
-                  }
-                }
-              }
-            }
-          }
-          for (let row = 1; row < rows - 1; row++) {
-            for (let col of [0, cols - 1]) {
-              if (map[row][col] === 0 || map[row][col] === 2) {
-                map[row][col] = 1;
-                if (
-                  player.alive &&
-                  !player.invincible &&
-                  player.tx === col &&
-                  player.ty === row
-                ) {
-                  player.lives -= 1;
-                  player.invincible = true;
-                  player.invincibleTimer = 3000;
-                  if (player.lives <= 0) {
-                    player.alive = false;
-                    gs.status = "gameover";
-                    setGameStatus("gameover");
-                    setFinalScore(gs.score);
-                    onGameOver(gs.score);
-                    return;
-                  }
-                  const cpos = tileCenter(1, 1);
-                  player.tx = 1;
-                  player.ty = 1;
-                  player.px = cpos.x;
-                  player.py = cpos.y;
-                  player.fromPx = cpos.x;
-                  player.fromPy = cpos.y;
-                  player.moving = false;
-                }
-                for (const enemy of enemies) {
-                  if (enemy.alive && enemy.tx === col && enemy.ty === row) {
-                    enemy.alive = false;
-                    gs.score += 50;
-                    if (gs.timerActive && gs.timerMs !== null)
-                      gs.timerMs += 30000;
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Update display
+      // ── Update display ──────────────────────────────────────────────────────
       setDisplayScore(gs.score);
       setDisplayLives(Math.min(player.lives, 3));
       setDisplayLevel(gs.level);
@@ -1322,10 +1654,9 @@ export default function App() {
         range: player.explosionRange,
         speed: player.speedMultiplier,
       });
-      setDisplayBombType(player.bombType);
       setDisplayTimer(gs.timerMs);
 
-      // Draw
+      // ── Draw ────────────────────────────────────────────────────────────────
       const canvas = canvasRef.current;
       if (!canvas) return;
       const ctx = canvas.getContext("2d");
@@ -1335,7 +1666,7 @@ export default function App() {
     [onGameOver],
   );
 
-  // RAF loop
+  // ── RAF loop ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (screen !== "game") return;
     const loop = (now: number) => {
@@ -1346,17 +1677,10 @@ export default function App() {
     return () => cancelAnimationFrame(rafRef.current);
   }, [tick, screen]);
 
-  // Key handlers
+  // ── Key handlers ────────────────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       keysRef.current.add(e.key);
-      // Last-key-wins: keep keyOrder with most recent key at front
-      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
-        keyOrderRef.current = [
-          e.key,
-          ...keyOrderRef.current.filter((k) => k !== e.key),
-        ];
-      }
       if (
         [
           "ArrowUp",
@@ -1374,12 +1698,7 @@ export default function App() {
         if (!gs || gs.status !== "playing" || !gs.player.alive) return;
         const { tx, ty } = gs.player;
         const activeBombs = gs.bombs.filter((b) => b.tx === tx && b.ty === ty);
-        if (
-          activeBombs.length === 0 &&
-          gs.bombs.filter(
-            (b) => !gs.enemies.some((e) => e.ownBombIds.includes(b.id)),
-          ).length < gs.player.maxBombs
-        ) {
+        if (activeBombs.length === 0 && gs.bombs.length < gs.player.maxBombs) {
           gs.bombs.push({
             id: gs.bombIdCounter++,
             tx,
@@ -1391,7 +1710,6 @@ export default function App() {
               1000,
               Math.min(4000, 2000 - gs.player.bombFuseLevel * 500),
             ),
-            bombType: gs.player.bombType,
           });
         }
       }
@@ -1402,12 +1720,7 @@ export default function App() {
         advanceLevel();
       }
     };
-    const onKeyUp = (e: KeyboardEvent) => {
-      keysRef.current.delete(e.key);
-      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
-        keyOrderRef.current = keyOrderRef.current.filter((k) => k !== e.key);
-      }
-    };
+    const onKeyUp = (e: KeyboardEvent) => keysRef.current.delete(e.key);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => {
@@ -1416,7 +1729,7 @@ export default function App() {
     };
   }, [gameStatus, advanceLevel]);
 
-  // ─── Picker Screen ─────────────────────────────────────────────────────────────
+  // ── Size Picker Screen ─────────────────────────────────────────────────────
   if (screen === "picker") {
     const handleStart = () => {
       let c = Number.parseInt(customCols, 10);
@@ -1438,6 +1751,7 @@ export default function App() {
             "linear-gradient(135deg, #050510 0%, #0a0a1a 40%, #050a10 70%, #0a0510 100%)",
         }}
       >
+        {/* Animated background particles */}
         <div
           style={{
             position: "absolute",
@@ -1447,6 +1761,7 @@ export default function App() {
               "radial-gradient(circle at 20% 20%, rgba(127,255,176,0.04) 0%, transparent 50%), radial-gradient(circle at 80% 80%, rgba(255,180,50,0.04) 0%, transparent 50%), radial-gradient(circle at 50% 50%, rgba(100,100,255,0.03) 0%, transparent 60%)",
           }}
         />
+        {/* Grid overlay */}
         <div
           style={{
             position: "absolute",
@@ -1459,6 +1774,7 @@ export default function App() {
           }}
         />
         <div className="text-center space-y-4 relative z-10">
+          {/* Decorative bombs */}
           <div
             className="flex justify-center gap-8 text-3xl mb-2"
             style={{ opacity: 0.5 }}
@@ -1501,10 +1817,12 @@ export default function App() {
           >
             ★ Classic Arcade · Endless Worlds ★
           </p>
+
+          {/* World preview pills */}
           <div className="flex flex-wrap justify-center gap-2 mt-4">
             {[
               { emoji: "🌿", name: "Grasslands", color: "#4aff8a" },
-              { emoji: "🏕️", name: "Desert", color: "#ffb830" },
+              { emoji: "🏜️", name: "Desert", color: "#ffb830" },
               { emoji: "❄️", name: "Ice", color: "#60d0ff" },
               { emoji: "🌋", name: "Lava", color: "#ff5030" },
               { emoji: "🚀", name: "Space", color: "#b060ff" },
@@ -1718,6 +2036,7 @@ export default function App() {
           </p>
         </div>
 
+        {/* Power-ups preview */}
         <div className="flex gap-4 text-center relative z-10">
           {[
             { icon: "🔥", label: "Fire Up", color: "#ff8040" },
@@ -1766,13 +2085,14 @@ export default function App() {
     );
   }
 
-  // ─── Game Screen ─────────────────────────────────────────────────────────────
+  // ── Game Screen ─────────────────────────────────────────────────────────────
   const gs = gsRef.current;
   const level = gs?.level ?? 1;
   const theme = getTheme(level);
   const canvasW = gameCols * TILE;
   const canvasH = gameRows * TILE;
 
+  // Timer display helpers
   const timerSecs =
     displayTimer !== null ? Math.ceil(displayTimer / 1000) : null;
   const timerColor =
@@ -1792,13 +2112,6 @@ export default function App() {
     fogOfWar: "🌫️ FOG OF WAR",
     windy: "💨 WINDY",
     dark: "🌑 DARK",
-    trapTiles: "⚠️ TRAP TILES",
-    conveyorBelts: "🔄 CONVEYOR BELTS",
-    gravityZones: "🌀 GRAVITY ZONES",
-    mirrorTiles: "🪞 MIRROR TILES",
-    stickyFloor: "🕸️ STICKY FLOOR",
-    shrinkingArena: "📦 SHRINKING ARENA",
-    cursedBomb: "💀 CURSED BOMB",
   };
   const challengeLabel: Record<ChallengeFlag, string> = {
     noBombUp: "NO BOMB+",
@@ -1815,6 +2128,7 @@ export default function App() {
         backgroundAttachment: "fixed",
       }}
     >
+      {/* Title */}
       <div className="flex items-center gap-3">
         <span
           className="font-display text-2xl font-black tracking-widest uppercase score-glow"
@@ -1853,10 +2167,11 @@ export default function App() {
         <div className="flex flex-col items-center gap-0.5">
           <span style={{ color: `${theme.uiAccent}88` }}>Lives</span>
           <span className="font-bold text-base" style={{ color: "#ff6b8a" }}>
-            {"\u2764\ufe0f".repeat(Math.max(0, displayLives))}
+            {"❤️".repeat(Math.max(0, displayLives))}
           </span>
         </div>
 
+        {/* Timer */}
         {timerSecs !== null && (
           <div
             className="flex flex-col items-center gap-0.5"
@@ -1891,30 +2206,6 @@ export default function App() {
           <span title="Speed" style={{ color: "#ffe066" }}>
             ⚡ {displayStats.speed.toFixed(1)}x
           </span>
-          {displayBombType !== "normal" && (
-            <span
-              title={`Bomb type: ${displayBombType}`}
-              style={{
-                color:
-                  displayBombType === "lava"
-                    ? "#ff4400"
-                    : displayBombType === "freeze"
-                      ? "#44aaff"
-                      : displayBombType === "kick"
-                        ? "#ffdd00"
-                        : "#ff88ff",
-                fontWeight: "bold",
-              }}
-            >
-              {displayBombType === "lava"
-                ? "🔴 LAVA"
-                : displayBombType === "freeze"
-                  ? "🔵 FREEZE"
-                  : displayBombType === "kick"
-                    ? "🟡 KICK"
-                    : "🟣 PORTAL"}
-            </span>
-          )}
           {displayShield > 0 && (
             <span title="Shield" style={{ color: "#80d8ff" }}>
               🛡️ {displayShield}s
@@ -1923,13 +2214,17 @@ export default function App() {
           {displayCurseFlash && (
             <span
               title="Cursed!"
-              style={{ color: "#bb44ff", animation: "pulse 0.3s infinite" }}
+              style={{
+                color: "#bb44ff",
+                animation: "pulse 0.3s infinite",
+              }}
             >
               ☠️ CURSED!
             </span>
           )}
         </div>
 
+        {/* Level modifier badge */}
         {displayModifier && (
           <>
             <div
@@ -1949,6 +2244,7 @@ export default function App() {
           </>
         )}
 
+        {/* Wind direction */}
         {displayModifier === "windy" && gs?.windDir && (
           <span style={{ color: "#80d8ff", fontSize: "1rem" }}>
             {gs.windDir.x === 1
@@ -1961,6 +2257,7 @@ export default function App() {
           </span>
         )}
 
+        {/* Challenge flags */}
         {displayChallenge.length > 0 && (
           <>
             <div
@@ -2022,6 +2319,7 @@ export default function App() {
         />
         <div className="scanlines" />
 
+        {/* Overlays */}
         {gameStatus === "levelcomplete" && (
           <div
             className="absolute inset-0 flex flex-col items-center justify-center gap-6"
@@ -2104,7 +2402,7 @@ export default function App() {
                   color: "#7fffb0",
                 }}
               >
-                ◄ MENU
+                ◀ MENU
               </Button>
             </div>
           </div>
@@ -2157,6 +2455,7 @@ export default function App() {
         )}
       </div>
 
+      {/* Controls hint */}
       <div
         className="font-mono text-xs tracking-widest text-center"
         style={{ color: "#2a3a2a" }}
@@ -2178,4 +2477,552 @@ export default function App() {
       </footer>
     </div>
   );
+}
+
+// ─── Renderer ─────────────────────────────────────────────────────────────────
+function drawGame(ctx: CanvasRenderingContext2D, gs: GameState, now: number) {
+  const {
+    cols,
+    rows,
+    map,
+    player,
+    enemies,
+    bombs,
+    explosions,
+    powerUps,
+    portal,
+    projectiles,
+  } = gs;
+  const W = cols * TILE;
+  const H = rows * TILE;
+  const theme = getTheme(gs.level);
+
+  // Floor
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      ctx.fillStyle = (row + col) % 2 === 0 ? theme.floor : theme.floor2;
+      ctx.fillRect(col * TILE, row * TILE, TILE, TILE);
+    }
+  }
+
+  // Grid overlay
+  ctx.strokeStyle = "rgba(255,255,255,0.025)";
+  ctx.lineWidth = 1;
+  for (let c = 0; c <= cols; c++) {
+    ctx.beginPath();
+    ctx.moveTo(c * TILE, 0);
+    ctx.lineTo(c * TILE, H);
+    ctx.stroke();
+  }
+  for (let r = 0; r <= rows; r++) {
+    ctx.beginPath();
+    ctx.moveTo(0, r * TILE);
+    ctx.lineTo(W, r * TILE);
+    ctx.stroke();
+  }
+
+  // Tiles
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const t = map[row][col];
+      const x = col * TILE;
+      const y = row * TILE;
+      if (t === TILE_SOLID) {
+        // Check if this is a lava/fill tile
+        const key = `${col},${row}`;
+        if (gs.lavaTiles.has(key)) {
+          drawLavaTile(ctx, x, y, theme);
+        } else {
+          drawSolidTile(ctx, x, y, theme);
+        }
+      } else if (t === TILE_BREAKABLE) drawBreakableTile(ctx, x, y, theme);
+    }
+  }
+
+  // Spawners
+  for (const spawner of gs.spawners) {
+    if (!spawner.alive) continue;
+    const sx = spawner.tx * TILE;
+    const sy = spawner.ty * TILE;
+    // Gold pulsing box
+    const pulse = 0.7 + 0.3 * Math.sin(now / 400);
+    ctx.save();
+    ctx.shadowColor = "#FFD700";
+    ctx.shadowBlur = 10 * pulse;
+    ctx.fillStyle = `rgba(255, 180, 0, ${0.85 + 0.15 * pulse})`;
+    ctx.strokeStyle = "#8B6914";
+    ctx.lineWidth = 2;
+    ctx.fillRect(sx + 2, sy + 2, TILE - 4, TILE - 4);
+    ctx.strokeRect(sx + 2, sy + 2, TILE - 4, TILE - 4);
+    // Star symbol
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#3B2800";
+    ctx.font = `bold ${Math.floor(TILE * 0.6)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("★", sx + TILE / 2, sy + TILE / 2);
+    ctx.restore();
+  }
+
+  // Portal
+  if (portal?.visible) drawPortal(ctx, portal, now, theme);
+
+  // Power-ups
+  for (const pu of powerUps) drawPowerUp(ctx, pu, now);
+
+  // Explosions
+  for (const exp of explosions) {
+    const progress = (now - exp.startedAt) / EXPLOSION_DURATION;
+    drawExplosion(ctx, exp.cells, progress);
+  }
+
+  // Bombs
+  for (const bomb of bombs) drawBomb(ctx, bomb, now);
+
+  // Projectiles
+  for (const proj of projectiles) {
+    if (!proj.alive) continue;
+    ctx.fillStyle = "#ff00ff";
+    ctx.beginPath();
+    ctx.arc(proj.px, proj.py, 5, 0, Math.PI * 2);
+    ctx.fill();
+    const grd = ctx.createRadialGradient(
+      proj.px,
+      proj.py,
+      0,
+      proj.px,
+      proj.py,
+      10,
+    );
+    grd.addColorStop(0, "rgba(255,0,255,0.5)");
+    grd.addColorStop(1, "transparent");
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(proj.px, proj.py, 10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Enemies
+  for (const enemy of enemies) {
+    if (enemy.alive) drawEnemy(ctx, enemy);
+  }
+
+  // Player
+  if (player.alive) {
+    const flash =
+      (player.invincible || player.shieldActive) &&
+      Math.floor(now / 100) % 2 === 0;
+    if (!flash) drawPlayer(ctx, player, now);
+  }
+
+  // ── Level Modifier overlay (fog/dark) ───────────────────────────────────────
+  if (gs.levelModifier === "fogOfWar" || gs.levelModifier === "dark") {
+    const radius = gs.levelModifier === "fogOfWar" ? TILE * 4.5 : TILE * 3;
+    const px = player.px;
+    const py = player.py;
+
+    // Draw a radial gradient: transparent at center, opaque at edges
+    const grad = ctx.createRadialGradient(px, py, radius * 0.3, px, py, radius);
+    grad.addColorStop(0, "rgba(0,0,0,0)");
+    grad.addColorStop(0.6, "rgba(0,0,0,0)");
+    grad.addColorStop(1, "rgba(0,0,0,0.97)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Fill outside the radius completely dark
+    // Use 4 corner rects to cover areas outside circle
+    ctx.fillStyle = "rgba(0,0,0,0.97)";
+    // Top strip
+    ctx.fillRect(0, 0, W, Math.max(0, py - radius));
+    // Bottom strip
+    ctx.fillRect(0, Math.min(H, py + radius), W, H);
+    // Left strip
+    ctx.fillRect(
+      0,
+      Math.max(0, py - radius),
+      Math.max(0, px - radius),
+      radius * 2,
+    );
+    // Right strip
+    ctx.fillRect(
+      Math.min(W, px + radius),
+      Math.max(0, py - radius),
+      W,
+      radius * 2,
+    );
+  }
+}
+
+function drawLavaTile(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  theme: ThemeColors,
+) {
+  // Pulsing lava/ice fill tile
+  ctx.fillStyle = theme.lavaColor;
+  ctx.fillRect(x, y, TILE, TILE);
+  // Bright edge
+  ctx.fillStyle = "rgba(255,255,255,0.3)";
+  ctx.fillRect(x, y, TILE, 3);
+  ctx.fillRect(x, y, 3, TILE);
+  // Dark edge
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(x, y + TILE - 3, TILE, 3);
+  ctx.fillRect(x + TILE - 3, y, 3, TILE);
+  // Center dot pattern
+  ctx.fillStyle = "rgba(255,255,255,0.2)";
+  ctx.fillRect(x + TILE / 2 - 3, y + TILE / 2 - 3, 6, 6);
+}
+
+function drawSolidTile(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  theme: ThemeColors,
+) {
+  const p = 2;
+  ctx.fillStyle = theme.solid;
+  ctx.fillRect(x, y, TILE, TILE);
+  ctx.fillStyle = theme.solidEdge;
+  ctx.fillRect(x + p, y + p, TILE - p * 2, TILE - p * 2);
+  ctx.fillStyle = theme.solid;
+  ctx.fillRect(x + TILE / 2 - 2, y + p + 2, 4, TILE - p * 2 - 4);
+  ctx.fillRect(x + p + 2, y + TILE / 2 - 2, TILE - p * 2 - 4, 4);
+}
+
+function drawBreakableTile(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  theme: ThemeColors,
+) {
+  const p = 2;
+  ctx.fillStyle = theme.breakable;
+  ctx.fillRect(x, y, TILE, TILE);
+  ctx.fillStyle = theme.breakableEdge;
+  ctx.fillRect(x + p, y + p, TILE - p * 2, p);
+  ctx.fillRect(x + p, y + p, p, TILE - p * 2);
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(x + p, y + TILE - p * 2, TILE - p * 2, p);
+  ctx.fillRect(x + TILE - p * 2, y + p, p, TILE - p * 2);
+  // Wood grain lines
+  ctx.fillStyle = "rgba(0,0,0,0.25)";
+  for (let i = 0; i < 3; i++) {
+    ctx.fillRect(x + 8 + i * 13, y + 6, 2, TILE - 12);
+  }
+}
+
+function drawPortal(
+  ctx: CanvasRenderingContext2D,
+  portal: Portal,
+  now: number,
+  theme: ThemeColors,
+) {
+  const cx = portal.tx * TILE + TILE / 2;
+  const cy = portal.ty * TILE + TILE / 2;
+  const angle = (now / 1000) * Math.PI * 2;
+  const pulse = 0.8 + Math.sin(now / 300) * 0.2;
+  const r = TILE * 0.4 * pulse;
+
+  // Outer glow
+  const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 2);
+  grd.addColorStop(0, `${theme.portalInner}cc`);
+  grd.addColorStop(0.5, `${theme.portalInner}44`);
+  grd.addColorStop(1, "transparent");
+  ctx.fillStyle = grd;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Inner ring
+  ctx.strokeStyle = theme.portalInner;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Rotating dashes
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.strokeStyle = theme.accent;
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * r * 0.6, Math.sin(a) * r * 0.6);
+    ctx.lineTo(Math.cos(a) * r * 0.9, Math.sin(a) * r * 0.9);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // Center
+  const inner = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 0.5);
+  inner.addColorStop(0, "#ffffff88");
+  inner.addColorStop(1, `${theme.portalInner}44`);
+  ctx.fillStyle = inner;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+const POWERUP_COLORS: Record<PowerUpType, string> = {
+  FireUp: "#ff8c00",
+  BombUp: "#ff4d6d",
+  SpeedUp: "#ffe066",
+  Shield: "#80d8ff",
+  Life: "#ff80ab",
+  Curse: "#9400d3",
+  FuseUp: "#ff6600",
+  FuseDown: "#4488ff",
+};
+const POWERUP_ICONS: Record<PowerUpType, string> = {
+  FireUp: "🔥",
+  BombUp: "💣",
+  SpeedUp: "⚡",
+  Shield: "🛡️",
+  Life: "❤️",
+  Curse: "☠",
+  FuseUp: "⏩",
+  FuseDown: "⏪",
+};
+
+function drawPowerUp(ctx: CanvasRenderingContext2D, pu: PowerUp, now: number) {
+  const cx = pu.tx * TILE + TILE / 2;
+  const cy = pu.ty * TILE + TILE / 2;
+  const bob = Math.sin(now / 400 + pu.id * 1.3) * 3;
+  const r = TILE * 0.3;
+  const color = POWERUP_COLORS[pu.type];
+
+  // Glow
+  const grd = ctx.createRadialGradient(cx, cy + bob, 0, cx, cy + bob, r * 2.5);
+  grd.addColorStop(0, `${color}55`);
+  grd.addColorStop(1, "transparent");
+  ctx.fillStyle = grd;
+  ctx.beginPath();
+  ctx.arc(cx, cy + bob, r * 2.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Circle bg
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.beginPath();
+  ctx.arc(cx, cy + bob, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(cx, cy + bob, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Icon
+  if (pu.type === "Curse") {
+    // Draw skull icon manually
+    ctx.fillStyle = "#bb44ff";
+    ctx.font = `bold ${TILE * 0.38}px serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("☠", cx, cy + bob);
+  } else {
+    ctx.font = `${TILE * 0.32}px serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(POWERUP_ICONS[pu.type], cx, cy + bob);
+  }
+}
+
+function drawBomb(ctx: CanvasRenderingContext2D, bomb: Bomb, now: number) {
+  const cx = bomb.tx * TILE + TILE / 2;
+  const cy = bomb.ty * TILE + TILE / 2;
+  const fuse = (now - bomb.placedAt) / (bomb.fuseMs ?? BOMB_FUSE);
+  const pulse = 1 + Math.sin(now / 150) * 0.06 * (1 + fuse);
+  const r = TILE * 0.32 * pulse;
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + r * 0.9, r * 0.9, r * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body
+  const grad = ctx.createRadialGradient(
+    cx - r * 0.3,
+    cy - r * 0.3,
+    0,
+    cx,
+    cy,
+    r,
+  );
+  grad.addColorStop(0, fuse > 0.6 ? "#ff6644" : "#444444");
+  grad.addColorStop(1, fuse > 0.6 ? "#882200" : "#111111");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Highlight
+  ctx.fillStyle = "rgba(255,255,255,0.25)";
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.3, cy - r * 0.3, r * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Fuse
+  const fuseFlicker = Math.sin(now / 60) > 0;
+  ctx.strokeStyle = fuseFlicker ? "#ffdd44" : "#ccaa22";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(cx + r * 0.2, cy - r * 0.8);
+  ctx.quadraticCurveTo(cx + r * 0.8, cy - r * 1.2, cx + r * 0.5, cy - r * 1.5);
+  ctx.stroke();
+
+  // Spark
+  if (fuseFlicker) {
+    ctx.fillStyle = "#ffff88";
+    ctx.beginPath();
+    ctx.arc(cx + r * 0.5, cy - r * 1.5, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawExplosion(
+  ctx: CanvasRenderingContext2D,
+  cells: Vec2[],
+  progress: number,
+) {
+  const alpha = 1 - progress;
+  for (const cell of cells) {
+    const x = cell.x * TILE;
+    const y = cell.y * TILE;
+    const cx = x + TILE / 2;
+    const cy = y + TILE / 2;
+
+    // Outer blast
+    const r = TILE * 0.48;
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    grad.addColorStop(0, `rgba(255,255,200,${alpha})`);
+    grad.addColorStop(0.3, `rgba(255,140,0,${alpha * 0.9})`);
+    grad.addColorStop(0.7, `rgba(255,50,0,${alpha * 0.7})`);
+    grad.addColorStop(1, "rgba(100,0,0,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y, TILE, TILE);
+  }
+}
+
+function drawPlayer(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  now: number,
+) {
+  const cx = player.px;
+  const cy = player.py;
+  const r = TILE * 0.3;
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + r * 0.85, r * 0.8, r * 0.3, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Shield glow
+  if (player.shieldActive) {
+    const shieldGrad = ctx.createRadialGradient(
+      cx,
+      cy,
+      r * 0.5,
+      cx,
+      cy,
+      r * 1.6,
+    );
+    shieldGrad.addColorStop(0, "rgba(80,200,255,0.0)");
+    shieldGrad.addColorStop(0.7, "rgba(80,200,255,0.3)");
+    shieldGrad.addColorStop(1, "rgba(80,200,255,0.0)");
+    ctx.fillStyle = shieldGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(80,200,255,0.8)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.4, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Body
+  const bodyGrad = ctx.createRadialGradient(
+    cx - r * 0.3,
+    cy - r * 0.3,
+    0,
+    cx,
+    cy,
+    r,
+  );
+  bodyGrad.addColorStop(0, "#88ddff");
+  bodyGrad.addColorStop(0.6, "#2288cc");
+  bodyGrad.addColorStop(1, "#001144");
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Visor
+  ctx.fillStyle = "rgba(200,240,255,0.9)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy - r * 0.1, r * 0.55, r * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Eye glint
+  const bob = Math.sin(now / 600) * 1.5;
+  ctx.fillStyle = "rgba(0,0,0,0.7)";
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.18, cy - r * 0.15 + bob, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + r * 0.18, cy - r * 0.15 + bob, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawEnemy(ctx: CanvasRenderingContext2D, enemy: Enemy) {
+  const cx = enemy.px;
+  const cy = enemy.py;
+  const r = TILE * 0.28;
+  const color = enemyColor(enemy.type);
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.35)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + r, r * 0.9, r * 0.3, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Body gradient
+  const grad = ctx.createRadialGradient(
+    cx - r * 0.3,
+    cy - r * 0.3,
+    0,
+    cx,
+    cy,
+    r,
+  );
+  grad.addColorStop(0, color);
+  grad.addColorStop(1, "#000000");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Eye
+  ctx.fillStyle = "rgba(255,255,255,0.9)";
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.22, cy - r * 0.15, r * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + r * 0.22, cy - r * 0.15, r * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#000000";
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.2, cy - r * 0.1, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + r * 0.2, cy - r * 0.1, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
 }

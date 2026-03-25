@@ -18,9 +18,9 @@
 
 @layer base {
   :root {
-    --background: 0.12 0.01 250;
+    --background: 0.06 0.01 250;
     --foreground: 0.95 0.02 95;
-    --card: 0.16 0.015 250;
+    --card: 0.1 0.015 250;
     --card-foreground: 0.95 0.02 95;
     --popover: 0.16 0.015 250;
     --popover-foreground: 0.95 0.02 95;
