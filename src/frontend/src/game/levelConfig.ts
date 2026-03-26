@@ -98,6 +98,7 @@ export function assignLevelModifier(level: number): LevelModifier {
   }
   if (level >= 18) pool.push("shrinkingArena");
   if (level >= 20) pool.push("cursedBomb");
+  if (level >= 16) pool.push("teleportPads");
 
   return pool[Math.floor(Math.random() * pool.length)];
 }

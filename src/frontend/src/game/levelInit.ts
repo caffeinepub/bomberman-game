@@ -1,4 +1,10 @@
-import { DIRS, TILE_BREAKABLE, TILE_EMPTY, tileCenter } from "./constants";
+import {
+  DIRS,
+  TILE_BREAKABLE,
+  TILE_EMPTY,
+  TILE_SOLID,
+  tileCenter,
+} from "./constants";
 import type { Vec2 } from "./constants";
 import { randomDir } from "./constants";
 import {
@@ -17,6 +23,7 @@ import type {
   PowerUp,
   Spawner,
   StickyTile,
+  TeleportPad,
   TrapTile,
 } from "./types";
 
@@ -149,12 +156,19 @@ export function initLevel(
   if (levelModifier === "conveyorBelts") {
     const count = Math.max(3, Math.floor(emptyTiles.length * 0.05));
     const conveyorShuffle = [...emptyTiles].sort(() => Math.random() - 0.5);
-    for (let i = 0; i < count && i < conveyorShuffle.length; i++) {
-      conveyorTiles.push({
-        tx: conveyorShuffle[i].x,
-        ty: conveyorShuffle[i].y,
-        dir: DIRS[Math.floor(Math.random() * 4)],
+    for (const tile of conveyorShuffle) {
+      if (conveyorTiles.length >= count) break;
+      // Only pick directions pointing to empty or breakable tiles
+      const validDirs = DIRS.filter((d) => {
+        const nx = tile.x + d.x;
+        const ny = tile.y + d.y;
+        if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) return false;
+        const t = map[ny][nx];
+        return t === TILE_EMPTY || t === TILE_BREAKABLE;
       });
+      if (validDirs.length === 0) continue;
+      const dir = validDirs[Math.floor(Math.random() * validDirs.length)];
+      conveyorTiles.push({ tx: tile.x, ty: tile.y, dir });
     }
   }
 
@@ -193,6 +207,31 @@ export function initLevel(
       stickyTiles.push({
         tx: stickyShuffle[i].x,
         ty: stickyShuffle[i].y,
+      });
+    }
+  }
+
+  // Teleport Pads (level modifier, from level 16)
+  const teleportPads: TeleportPad[] = [];
+  let teleportPadIdCounter = 0;
+  if (levelModifier === "teleportPads") {
+    const pairCount = level >= 30 ? 3 : level >= 21 ? 2 : 1;
+    const candidates = shuffleEmpty.filter((t) => !(t.x <= 2 && t.y <= 2));
+    let idx = 0;
+    for (let p = 0; p < pairCount && idx + 1 < candidates.length; p++) {
+      const a = candidates[idx++];
+      const b = candidates[idx++];
+      teleportPads.push({
+        id: teleportPadIdCounter++,
+        tx: a.x,
+        ty: a.y,
+        pairId: p,
+      });
+      teleportPads.push({
+        id: teleportPadIdCounter++,
+        tx: b.x,
+        ty: b.y,
+        pairId: p,
       });
     }
   }
@@ -247,5 +286,8 @@ export function initLevel(
     teleportFlashUntil: 0,
     teleportPortals: [],
     teleportPortalIdCounter: 0,
+    // Teleport pads
+    teleportPads,
+    teleportPadIdCounter,
   };
 }

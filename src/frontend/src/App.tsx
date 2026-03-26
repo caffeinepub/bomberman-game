@@ -505,6 +505,50 @@ export default function App() {
             player.px = tc.x;
             player.py = tc.y;
             player.moving = false;
+            // Teleport portal check (portal bomb portals)
+            if (gs.teleportPortals.length === 2) {
+              const entered = gs.teleportPortals.find(
+                (tp) => tp.tx === player.tx && tp.ty === player.ty,
+              );
+              if (entered) {
+                const other = gs.teleportPortals.find(
+                  (tp) => tp.id !== entered.id,
+                );
+                if (other) {
+                  const c = tileCenter(other.tx, other.ty);
+                  player.tx = other.tx;
+                  player.ty = other.ty;
+                  player.px = c.x;
+                  player.py = c.y;
+                  player.fromPx = c.x;
+                  player.fromPy = c.y;
+                  player.moving = false;
+                  gs.teleportFlashUntil = now + 300;
+                }
+              }
+            }
+            // Teleport pad check
+            if (gs.teleportPads && gs.teleportPads.length > 0) {
+              const pad = gs.teleportPads.find(
+                (p) => p.tx === player.tx && p.ty === player.ty,
+              );
+              if (pad) {
+                const partner = gs.teleportPads.find(
+                  (p) => p.pairId === pad.pairId && p.id !== pad.id,
+                );
+                if (partner) {
+                  const c = tileCenter(partner.tx, partner.ty);
+                  player.tx = partner.tx;
+                  player.ty = partner.ty;
+                  player.px = c.x;
+                  player.py = c.y;
+                  player.fromPx = c.x;
+                  player.fromPy = c.y;
+                  player.moving = false;
+                  gs.teleportFlashUntil = now + 300;
+                }
+              }
+            }
           } else {
             const tc = tileCenter(player.tx, player.ty);
             player.px =
@@ -654,6 +698,7 @@ export default function App() {
                 "freeze",
                 "kick",
                 "portal",
+                "surprise",
               ];
               player.bombType = types[Math.floor(Math.random() * types.length)];
               gs.score += 30;
@@ -777,27 +822,6 @@ export default function App() {
           setGameStatus("levelcomplete");
           return;
         }
-
-        // Teleport portal check (portal bomb portals)
-        if (gs.teleportPortals.length === 2 && !player.moving) {
-          const entered = gs.teleportPortals.find(
-            (tp) => tp.tx === player.tx && tp.ty === player.ty,
-          );
-          if (entered) {
-            const other = gs.teleportPortals.find((tp) => tp.id !== entered.id);
-            if (other) {
-              const c = tileCenter(other.tx, other.ty);
-              player.tx = other.tx;
-              player.ty = other.ty;
-              player.px = c.x;
-              player.py = c.y;
-              player.fromPx = c.x;
-              player.fromPy = c.y;
-              player.moving = false;
-              gs.teleportFlashUntil = now + 300;
-            }
-          }
-        }
       }
 
       // Enemy AI
@@ -874,6 +898,26 @@ export default function App() {
                   const c = tileCenter(otherTp.tx, otherTp.ty);
                   enemy.tx = otherTp.tx;
                   enemy.ty = otherTp.ty;
+                  enemy.px = c.x;
+                  enemy.py = c.y;
+                  enemy.fromPx = c.x;
+                  enemy.fromPy = c.y;
+                }
+              }
+            }
+            // Enemy teleport pad check
+            if (gs.teleportPads && gs.teleportPads.length > 0) {
+              const pad = gs.teleportPads.find(
+                (p) => p.tx === enemy.tx && p.ty === enemy.ty,
+              );
+              if (pad) {
+                const partner = gs.teleportPads.find(
+                  (p) => p.pairId === pad.pairId && p.id !== pad.id,
+                );
+                if (partner) {
+                  const c = tileCenter(partner.tx, partner.ty);
+                  enemy.tx = partner.tx;
+                  enemy.ty = partner.ty;
                   enemy.px = c.x;
                   enemy.py = c.y;
                   enemy.fromPx = c.x;
@@ -1391,7 +1435,12 @@ export default function App() {
               1000,
               Math.min(4000, 2000 - gs.player.bombFuseLevel * 500),
             ),
-            bombType: gs.player.bombType,
+            bombType:
+              gs.player.bombType === "surprise"
+                ? (
+                    ["normal", "lava", "freeze", "kick", "portal"] as BombType[]
+                  )[Math.floor(Math.random() * 5)]
+                : gs.player.bombType,
           });
         }
       }
@@ -1799,6 +1848,7 @@ export default function App() {
     stickyFloor: "🕸️ STICKY FLOOR",
     shrinkingArena: "📦 SHRINKING ARENA",
     cursedBomb: "💀 CURSED BOMB",
+    teleportPads: "🌀 TELEPORT PADS",
   };
   const challengeLabel: Record<ChallengeFlag, string> = {
     noBombUp: "NO BOMB+",

@@ -10,7 +10,13 @@ export type PowerUpType =
   | "FuseUp"
   | "FuseDown"
   | "BombType";
-export type BombType = "normal" | "lava" | "freeze" | "kick" | "portal";
+export type BombType =
+  | "normal"
+  | "lava"
+  | "freeze"
+  | "kick"
+  | "portal"
+  | "surprise";
 export type EnemyType =
   | "patrol"
   | "fast"
@@ -33,6 +39,7 @@ export type LevelModifier =
   | "stickyFloor"
   | "shrinkingArena"
   | "cursedBomb"
+  | "teleportPads"
   | null;
 export type ChallengeFlag = "noBombUp" | "noFireUp" | "curseOnly";
 
@@ -153,6 +160,14 @@ export interface Portal {
   visible: boolean;
 }
 
+/** Teleport pads (level modifier) */
+export interface TeleportPad {
+  id: number;
+  tx: number;
+  ty: number;
+  pairId: number;
+}
+
 /** Teleport portal left by portal bombs (different from the level-exit Portal) */
 export interface TeleportPortal {
   id: number;
@@ -244,4 +259,7 @@ export interface GameState {
   // Portal bomb teleport portals
   teleportPortals: TeleportPortal[];
   teleportPortalIdCounter: number;
+  // Teleport pads (level modifier)
+  teleportPads: TeleportPad[];
+  teleportPadIdCounter: number;
 }

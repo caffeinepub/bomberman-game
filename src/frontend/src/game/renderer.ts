@@ -231,6 +231,30 @@ export function drawGame(
     ctx.stroke();
   }
 
+  // Teleport pads (level modifier)
+  if (gs.teleportPads && gs.teleportPads.length > 0) {
+    const padColors = ["#00ffff", "#aaff00", "#ff8800"];
+    for (const pad of gs.teleportPads) {
+      const cx = pad.tx * TILE + TILE / 2;
+      const cy = pad.ty * TILE + TILE / 2;
+      const color = padColors[pad.pairId % padColors.length];
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, TILE * 0.38, 0, Math.PI * 2);
+      ctx.fillStyle = `${color}55`;
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.font = `bold ${Math.floor(TILE * 0.3)}px monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("TP", cx, cy);
+      ctx.restore();
+    }
+  }
+
   // Teleport portals (portal bomb portals)
   for (const tp of gs.teleportPortals) {
     drawTeleportPortal(ctx, tp, now);
@@ -599,12 +623,13 @@ function drawPowerUp(ctx: CanvasRenderingContext2D, pu: PowerUp, now: number) {
       "#ffffff",
       "#ffdd00",
       "#ff44ff",
+      "#ffff44",
     ];
-    const labels: string[] = ["L", "F", "N", "K", "P"];
-    const count = 5;
-    const spacing = r * 0.44;
+    const labels: string[] = ["L", "F", "N", "K", "P", "S"];
+    const count = 6;
+    const spacing = r * 0.38;
     for (let i = 0; i < count; i++) {
-      const ox = (i - 2) * spacing;
+      const ox = (i - 2.5) * spacing;
       const cr = r * 0.22;
       ctx.fillStyle = colors[i];
       ctx.beginPath();
@@ -655,9 +680,13 @@ function drawBomb(ctx: CanvasRenderingContext2D, bomb: Bomb, now: number) {
             ? fuse > 0.6
               ? "#ff88ff"
               : "#aa00cc"
-            : fuse > 0.6
-              ? "#ff6644"
-              : "#444444";
+            : bType === "surprise"
+              ? fuse > 0.6
+                ? "#ffff88"
+                : "#888800"
+              : fuse > 0.6
+                ? "#ff6644"
+                : "#444444";
   const baseColor1 =
     bType === "lava"
       ? "#550000"
@@ -667,9 +696,11 @@ function drawBomb(ctx: CanvasRenderingContext2D, bomb: Bomb, now: number) {
           ? "#443300"
           : bType === "portal"
             ? "#220033"
-            : fuse > 0.6
-              ? "#882200"
-              : "#111111";
+            : bType === "surprise"
+              ? "#444400"
+              : fuse > 0.6
+                ? "#882200"
+                : "#111111";
 
   const grad = ctx.createRadialGradient(
     cx - r * 0.3,
@@ -713,6 +744,15 @@ function drawBomb(ctx: CanvasRenderingContext2D, bomb: Bomb, now: number) {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("↔", cx, cy + r * 0.1);
+  }
+
+  // Surprise bomb: draw ? symbol
+  if (bType === "surprise") {
+    ctx.fillStyle = "rgba(255,255,100,0.95)";
+    ctx.font = `bold ${Math.floor(r * 1.2)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("?", cx, cy + r * 0.1);
   }
 
   // Portal bomb: draw swirl symbol
