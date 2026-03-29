@@ -23,6 +23,7 @@ import type {
   GameState,
   GameStatus,
   LevelModifier,
+  Player,
   Screen,
 } from "./game/types";
 
@@ -34,10 +35,19 @@ export default function App() {
   const rafRef = useRef<number>(0);
   const { actor } = useActor();
 
+  // ─── Co-op state ──────────────────────────────────────────────────────────
+  const [displaySharedLives, setDisplaySharedLives] = useState(6);
+  const [displayIsMultiplayer, setDisplayIsMultiplayer] = useState(false);
+  const p2KeyOrderRef = useRef<string[]>([]);
+
   const [screen, setScreen] = useState<Screen>("picker");
   const [customCols, setCustomCols] = useState("17");
   const [customRows, setCustomRows] = useState("13");
   const [showCustom, setShowCustom] = useState(false);
+  const [showCoOpPicker, setShowCoOpPicker] = useState(false);
+  const [coOpCustomCols, setCoOpCustomCols] = useState("17");
+  const [coOpCustomRows, setCoOpCustomRows] = useState("13");
+  const [showCoOpCustom, setShowCoOpCustom] = useState(false);
   const [displayScore, setDisplayScore] = useState(0);
   const [displayLives, setDisplayLives] = useState(3);
   const [displayLevel, setDisplayLevel] = useState(1);
@@ -79,9 +89,10 @@ export default function App() {
     }
   }, [actor]);
 
-  const startGame = useCallback((cols: number, rows: number) => {
-    const gs = initLevel(cols, rows, 1);
+  const startGame = useCallback((cols: number, rows: number, mp = false) => {
+    const gs = initLevel(cols, rows, 1, undefined, mp);
     gsRef.current = gs;
+    p2KeyOrderRef.current = [];
     setGameCols(cols);
     setGameRows(rows);
     setScreen("game");
@@ -95,6 +106,8 @@ export default function App() {
     setDisplayTimer(gs.timerMs);
     setDisplayModifier(gs.levelModifier);
     setDisplayChallenge(gs.challengeFlags);
+    setDisplayIsMultiplayer(mp);
+    if (mp) setDisplaySharedLives(6);
   }, []);
 
   const restartGame = useCallback(() => {
@@ -118,8 +131,24 @@ export default function App() {
     const gs = gsRef.current;
     if (!gs) return;
     const nextLevel = gs.level + 1;
-    const newGs = initLevel(gs.cols, gs.rows, nextLevel, gs.player);
+    const newGs = initLevel(
+      gs.cols,
+      gs.rows,
+      nextLevel,
+      gs.player,
+      gs.isMultiplayer,
+    );
     newGs.score = gs.score;
+    // Multiplayer: carry over sharedLives, respawn dead player2
+    if (gs.isMultiplayer && gs.player2) {
+      newGs.sharedLives = gs.sharedLives;
+      const prevP2BombType = gs.player2.bombType;
+      if (newGs.player2) {
+        newGs.player2.alive = true;
+        newGs.player2.bombType = prevP2BombType;
+      }
+      p2KeyOrderRef.current = [];
+    }
     gsRef.current = newGs;
     setDisplayLevel(nextLevel);
     setGameStatus("playing");
@@ -128,6 +157,7 @@ export default function App() {
     setDisplayChallenge(newGs.challengeFlags);
     setDisplayStats({ maxBombs: 1, range: 2, speed: 1 });
     setDisplayShield(0);
+    if (gs.isMultiplayer) setDisplaySharedLives(newGs.sharedLives);
   }, []);
 
   const onGameOver = useCallback(
@@ -166,6 +196,33 @@ export default function App() {
     },
     [actor],
   );
+
+  // ─── Place P2 Bomb (local co-op) ─────────────────────────────────────────
+  const placeP2Bomb = useCallback((gs: GameState) => {
+    if (!gs.player2 || !gs.player2.alive) return;
+    const p2 = gs.player2;
+    if (
+      gs.bombs.filter((b) => b.placedByP2).length < p2.maxBombs &&
+      !gs.bombs.some((b) => b.tx === p2.tx && b.ty === p2.ty)
+    ) {
+      const newBombType: BombType =
+        p2.bombType === "surprise"
+          ? (["normal", "lava", "freeze", "kick", "portal"] as BombType[])[
+              Math.floor(Math.random() * 5)
+            ]
+          : p2.bombType;
+      gs.bombs.push({
+        id: gs.bombIdCounter++,
+        tx: p2.tx,
+        ty: p2.ty,
+        placedAt: performance.now(),
+        range: p2.explosionRange,
+        hasDrifted: false,
+        fuseMs: Math.max(1000, Math.min(4000, 2000 - p2.bombFuseLevel * 500)),
+        bombType: newBombType,
+      });
+    }
+  }, []);
 
   // ─── Game Loop ───────────────────────────────────────────────────────────────
   const tick = useCallback(
@@ -642,6 +699,171 @@ export default function App() {
           }
         }
 
+        // ─── Player 2 Movement & Logic (multiplayer host) ──────────────────
+        if (gs.isMultiplayer && gs.player2) {
+          const p2 = gs.player2;
+          if (p2.invincible) {
+            p2.invincibleTimer -= dt * 1000;
+            if (p2.invincibleTimer <= 0) {
+              p2.invincible = false;
+              p2.invincibleTimer = 0;
+            }
+          }
+          if (p2.shieldActive) {
+            p2.shieldTimer -= dt * 1000;
+            if (p2.shieldTimer <= 0) {
+              p2.shieldActive = false;
+              p2.shieldTimer = 0;
+            }
+          }
+
+          if (p2.alive) {
+            const p2Speed = 4 * p2.speedMultiplier;
+            if (p2.moving) {
+              p2.moveProgress += dt * p2Speed;
+              if (p2.moveProgress >= 1) {
+                p2.moveProgress = 1;
+                const tc2 = tileCenter(p2.tx, p2.ty);
+                p2.px = tc2.x;
+                p2.py = tc2.y;
+                p2.moving = false;
+              } else {
+                const tc2 = tileCenter(p2.tx, p2.ty);
+                p2.px = p2.fromPx + (tc2.x - p2.fromPx) * p2.moveProgress;
+                p2.py = p2.fromPy + (tc2.y - p2.fromPy) * p2.moveProgress;
+              }
+            }
+            if (!p2.moving) {
+              const p2ActiveKey = p2KeyOrderRef.current[0];
+              const p2DirMap: Record<string, { dx: number; dy: number }> = {
+                KeyW: { dx: 0, dy: -1 },
+                KeyS: { dx: 0, dy: 1 },
+                KeyA: { dx: -1, dy: 0 },
+                KeyD: { dx: 1, dy: 0 },
+              };
+              const p2Dir = p2ActiveKey ? p2DirMap[p2ActiveKey] : null;
+              if (p2Dir) {
+                const ntx2 = p2.tx + p2Dir.dx;
+                const nty2 = p2.ty + p2Dir.dy;
+                if (
+                  isWalkable(map, cols, rows, ntx2, nty2) &&
+                  !gs.bombs.some((b) => b.tx === ntx2 && b.ty === nty2)
+                ) {
+                  p2.fromPx = p2.px;
+                  p2.fromPy = p2.py;
+                  p2.tx = ntx2;
+                  p2.ty = nty2;
+                  p2.moving = true;
+                  p2.moveProgress = 0;
+                }
+              }
+            }
+
+            // P2 power-up collection
+            const p2Pickups = gs.powerUps.filter(
+              (pu) => pu.tx === p2.tx && pu.ty === p2.ty,
+            );
+            for (const pu of p2Pickups) {
+              gs.powerUps = gs.powerUps.filter((p) => p.id !== pu.id);
+              switch (pu.type) {
+                case "FireUp":
+                  p2.explosionRange = Math.min(p2.explosionRange + 1, 8);
+                  gs.score += 20;
+                  break;
+                case "BombUp":
+                  p2.maxBombs = Math.min(p2.maxBombs + 1, 8);
+                  gs.score += 20;
+                  break;
+                case "SpeedUp":
+                  p2.speedMultiplier = Math.min(p2.speedMultiplier + 0.3, 2.5);
+                  gs.score += 20;
+                  break;
+                case "Shield":
+                  p2.shieldActive = true;
+                  p2.shieldTimer = 5000;
+                  gs.score += 30;
+                  break;
+                case "Life":
+                  if (gs.sharedLives < 9) gs.sharedLives++;
+                  gs.score += 50;
+                  break;
+                case "BombType": {
+                  const types2: BombType[] = [
+                    "normal",
+                    "lava",
+                    "freeze",
+                    "kick",
+                    "portal",
+                    "surprise",
+                  ];
+                  p2.bombType =
+                    types2[Math.floor(Math.random() * types2.length)];
+                  gs.score += 30;
+                  break;
+                }
+                case "FuseUp":
+                  p2.bombFuseLevel = Math.min(p2.bombFuseLevel + 1, 2);
+                  gs.score += 20;
+                  break;
+                case "FuseDown":
+                  p2.bombFuseLevel = Math.max(p2.bombFuseLevel - 1, -2);
+                  gs.score += 20;
+                  break;
+              }
+            }
+
+            // P2 explosion hit check
+            if (!p2.invincible && !p2.shieldActive) {
+              for (const exp of gs.explosions) {
+                if (exp.cells.some((c) => c.x === p2.tx && c.y === p2.ty)) {
+                  if (p2.shieldActive) {
+                    p2.shieldActive = false;
+                    p2.invincible = true;
+                    p2.invincibleTimer = 3000;
+                  } else {
+                    gs.sharedLives -= 1;
+                    p2.alive = false;
+                    if (gs.sharedLives <= 0 || !gs.player.alive) {
+                      gs.status = "gameover";
+                      setGameStatus("gameover");
+                      setFinalScore(gs.score);
+                      onGameOver(gs.score);
+                      return;
+                    }
+                  }
+                  break;
+                }
+              }
+            }
+
+            // P2 enemy collision
+            if (!p2.invincible) {
+              for (const enemy of enemies) {
+                if (!enemy.alive) continue;
+                const dist2 = Math.hypot(enemy.px - p2.px, enemy.py - p2.py);
+                if (dist2 < TILE * 0.6) {
+                  if (p2.shieldActive) {
+                    p2.shieldActive = false;
+                    p2.invincible = true;
+                    p2.invincibleTimer = 3000;
+                  } else {
+                    gs.sharedLives -= 1;
+                    p2.alive = false;
+                    if (gs.sharedLives <= 0 || !gs.player.alive) {
+                      gs.status = "gameover";
+                      setGameStatus("gameover");
+                      setFinalScore(gs.score);
+                      onGameOver(gs.score);
+                      return;
+                    }
+                  }
+                  break;
+                }
+              }
+            }
+          }
+        }
+
         // Collect power-ups
         const pickedUp = gs.powerUps.filter(
           (p) => p.tx === player.tx && p.ty === player.ty,
@@ -751,25 +973,37 @@ export default function App() {
         if (player.alive && !player.invincible && !player.shieldActive) {
           for (const exp of gs.explosions) {
             if (exp.cells.some((c) => c.x === player.tx && c.y === player.ty)) {
-              player.lives -= 1;
-              if (player.lives <= 0) {
+              if (gs.isMultiplayer) {
+                gs.sharedLives -= 1;
                 player.alive = false;
-                gs.status = "gameover";
-                setGameStatus("gameover");
-                setFinalScore(gs.score);
-                onGameOver(gs.score);
-                return;
+                if (gs.sharedLives <= 0 || !gs.player2?.alive) {
+                  gs.status = "gameover";
+                  setGameStatus("gameover");
+                  setFinalScore(gs.score);
+                  onGameOver(gs.score);
+                  return;
+                }
+              } else {
+                player.lives -= 1;
+                if (player.lives <= 0) {
+                  player.alive = false;
+                  gs.status = "gameover";
+                  setGameStatus("gameover");
+                  setFinalScore(gs.score);
+                  onGameOver(gs.score);
+                  return;
+                }
+                player.invincible = true;
+                player.invincibleTimer = 3000;
+                const c = tileCenter(1, 1);
+                player.tx = 1;
+                player.ty = 1;
+                player.px = c.x;
+                player.py = c.y;
+                player.fromPx = c.x;
+                player.fromPy = c.y;
+                player.moving = false;
               }
-              player.invincible = true;
-              player.invincibleTimer = 3000;
-              const c = tileCenter(1, 1);
-              player.tx = 1;
-              player.ty = 1;
-              player.px = c.x;
-              player.py = c.y;
-              player.fromPx = c.x;
-              player.fromPy = c.y;
-              player.moving = false;
               break;
             }
           }
@@ -786,6 +1020,16 @@ export default function App() {
                 player.shieldTimer = 0;
                 player.invincible = true;
                 player.invincibleTimer = 3000;
+              } else if (gs.isMultiplayer) {
+                gs.sharedLives -= 1;
+                player.alive = false;
+                if (gs.sharedLives <= 0 || !gs.player2?.alive) {
+                  gs.status = "gameover";
+                  setGameStatus("gameover");
+                  setFinalScore(gs.score);
+                  onGameOver(gs.score);
+                  return;
+                }
               } else {
                 player.lives -= 1;
                 player.invincible = true;
@@ -1356,7 +1600,11 @@ export default function App() {
 
       // Update display
       setDisplayScore(gs.score);
-      setDisplayLives(Math.min(player.lives, 3));
+      if (gs.isMultiplayer) {
+        setDisplaySharedLives(gs.sharedLives);
+      } else {
+        setDisplayLives(Math.min(player.lives, 3));
+      }
       setDisplayLevel(gs.level);
       setDisplayShield(
         player.shieldActive ? Math.ceil(player.shieldTimer / 1000) : 0,
@@ -1444,6 +1692,17 @@ export default function App() {
           });
         }
       }
+      // P2 local co-op controls
+      if (["KeyW", "KeyS", "KeyA", "KeyD"].includes(e.code)) {
+        p2KeyOrderRef.current = [
+          e.code,
+          ...p2KeyOrderRef.current.filter((k) => k !== e.code),
+        ];
+      }
+      if (e.code === "KeyF") {
+        const gs = gsRef.current;
+        if (gs && gs.status === "playing") placeP2Bomb(gs);
+      }
       if (
         (e.key === " " || e.key === "Enter") &&
         gameStatus === "levelcomplete"
@@ -1456,6 +1715,11 @@ export default function App() {
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
         keyOrderRef.current = keyOrderRef.current.filter((k) => k !== e.key);
       }
+      if (["KeyW", "KeyS", "KeyA", "KeyD"].includes(e.code)) {
+        p2KeyOrderRef.current = p2KeyOrderRef.current.filter(
+          (k) => k !== e.code,
+        );
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -1463,9 +1727,8 @@ export default function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, [gameStatus, advanceLevel]);
+  }, [gameStatus, advanceLevel, placeP2Bomb]);
 
-  // ─── Picker Screen ─────────────────────────────────────────────────────────────
   if (screen === "picker") {
     const handleStart = () => {
       let c = Number.parseInt(customCols, 10);
@@ -1476,7 +1739,7 @@ export default function App() {
       if (Number.isNaN(r) || r < 7) r = 7;
       if (r > 21) r = 21;
       if (r % 2 === 0) r += 1;
-      startGame(c, r);
+      startGame(c, r, false);
     };
 
     return (
@@ -1603,7 +1866,7 @@ export default function App() {
                 data-ocid={`picker.${label.toLowerCase()}.button`}
                 onClick={() => {
                   setShowCustom(false);
-                  startGame(cols, rows);
+                  startGame(cols, rows, false);
                 }}
                 className="font-mono font-black text-lg w-14 h-14 border"
                 style={{
@@ -1635,6 +1898,182 @@ export default function App() {
               Custom
             </Button>
           </div>
+
+          <div
+            className="mt-4 pt-4 border-t"
+            style={{ borderColor: "rgba(68,170,255,0.2)" }}
+          >
+            <Button
+              data-ocid="picker.localcoop.button"
+              onClick={() => {
+                setShowCoOpPicker(true);
+              }}
+              className="font-mono font-bold tracking-widest uppercase w-full py-3 border"
+              style={{
+                background: "rgba(68,170,255,0.1)",
+                borderColor: "#44aaff",
+                color: "#44aaff",
+              }}
+            >
+              🎮 LOCAL CO-OP
+            </Button>
+            <p
+              className="font-mono text-xs text-center mt-2"
+              style={{ color: "#2a4a6a" }}
+            >
+              P1: Arrows + R.Ctrl &nbsp;|&nbsp; P2: WASD + F
+            </p>
+          </div>
+
+          {showCoOpPicker && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center"
+              style={{ background: "rgba(0,0,0,0.75)" }}
+            >
+              <div
+                className="flex flex-col gap-4 p-6 rounded-sm"
+                style={{
+                  background: "#07120a",
+                  border: "1px solid rgba(68,170,255,0.4)",
+                  boxShadow: "0 0 40px rgba(68,170,255,0.15)",
+                  minWidth: 280,
+                }}
+              >
+                <p
+                  className="font-mono font-bold text-sm tracking-widest uppercase text-center"
+                  style={{ color: "#44aaff" }}
+                >
+                  🎮 Local Co-op — Select Grid Size
+                </p>
+                <div className="flex gap-3 justify-center">
+                  {(
+                    [
+                      { label: "S", cols: 13, rows: 11 },
+                      { label: "M", cols: 17, rows: 13 },
+                      { label: "L", cols: 21, rows: 15 },
+                    ] as const
+                  ).map(({ label, cols, rows }) => (
+                    <Button
+                      key={label}
+                      onClick={() => {
+                        setShowCoOpPicker(false);
+                        startGame(cols, rows, true);
+                      }}
+                      className="font-mono font-black text-lg w-14 h-14 border"
+                      style={{
+                        background: "rgba(68,170,255,0.08)",
+                        borderColor: "rgba(68,170,255,0.4)",
+                        color: "#44aaff",
+                        textShadow: "0 0 8px rgba(68,170,255,0.6)",
+                      }}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                  <Button
+                    onClick={() => setShowCoOpCustom((v) => !v)}
+                    className="font-mono font-black text-sm w-20 h-14 border"
+                    style={{
+                      background: showCoOpCustom
+                        ? "rgba(68,170,255,0.15)"
+                        : "transparent",
+                      borderColor: "#44aaff",
+                      color: "#44aaff",
+                    }}
+                  >
+                    Custom
+                  </Button>
+                </div>
+                {showCoOpCustom && (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex gap-3 items-center">
+                      <label
+                        htmlFor="coop-cols-input"
+                        className="font-mono text-xs w-14"
+                        style={{ color: "#4a7a9a" }}
+                      >
+                        Cols
+                      </label>
+                      <Input
+                        id="coop-cols-input"
+                        type="number"
+                        value={coOpCustomCols}
+                        onChange={(e) => setCoOpCustomCols(e.target.value)}
+                        className="w-24 font-mono text-center"
+                        min={9}
+                        max={29}
+                        style={{
+                          background: "rgba(10,20,30,0.9)",
+                          borderColor: "#1a3a5a",
+                          color: "#44aaff",
+                        }}
+                      />
+                    </div>
+                    <div className="flex gap-3 items-center">
+                      <label
+                        htmlFor="coop-rows-input"
+                        className="font-mono text-xs w-14"
+                        style={{ color: "#4a7a9a" }}
+                      >
+                        Rows
+                      </label>
+                      <Input
+                        id="coop-rows-input"
+                        type="number"
+                        value={coOpCustomRows}
+                        onChange={(e) => setCoOpCustomRows(e.target.value)}
+                        className="w-24 font-mono text-center"
+                        min={7}
+                        max={21}
+                        style={{
+                          background: "rgba(10,20,30,0.9)",
+                          borderColor: "#1a3a5a",
+                          color: "#44aaff",
+                        }}
+                      />
+                    </div>
+                    <Button
+                      onClick={() => {
+                        let c = Number.parseInt(coOpCustomCols, 10);
+                        let r = Number.parseInt(coOpCustomRows, 10);
+                        if (Number.isNaN(c) || c < 9) c = 9;
+                        if (c > 29) c = 29;
+                        if (c % 2 === 0) c += 1;
+                        if (Number.isNaN(r) || r < 7) r = 7;
+                        if (r > 21) r = 21;
+                        if (r % 2 === 0) r += 1;
+                        setShowCoOpPicker(false);
+                        startGame(c, r, true);
+                      }}
+                      className="font-mono font-bold tracking-widest uppercase border w-full"
+                      style={{
+                        background: "rgba(68,170,255,0.15)",
+                        borderColor: "#44aaff",
+                        color: "#44aaff",
+                      }}
+                    >
+                      ▶ START CO-OP
+                    </Button>
+                  </div>
+                )}
+                <Button
+                  onClick={() => {
+                    setShowCoOpPicker(false);
+                    setShowCoOpCustom(false);
+                  }}
+                  className="font-mono text-xs border mt-1"
+                  style={{
+                    background: "transparent",
+                    borderColor: "#2a4a6a",
+                    color: "#44aaff",
+                    opacity: 0.7,
+                  }}
+                >
+                  ✕ Cancel
+                </Button>
+              </div>
+            </div>
+          )}
 
           {showCustom && (
             <div className="flex flex-col gap-3 pt-2">
@@ -1901,11 +2340,31 @@ export default function App() {
           </span>
         </div>
         <div className="flex flex-col items-center gap-0.5">
-          <span style={{ color: `${theme.uiAccent}88` }}>Lives</span>
+          <span style={{ color: `${theme.uiAccent}88` }}>
+            {displayIsMultiplayer ? "Shared Lives" : "Lives"}
+          </span>
           <span className="font-bold text-base" style={{ color: "#ff6b8a" }}>
-            {"\u2764\ufe0f".repeat(Math.max(0, displayLives))}
+            {displayIsMultiplayer
+              ? `❤️ x${displaySharedLives}`
+              : "\u2764\ufe0f".repeat(Math.max(0, displayLives))}
           </span>
         </div>
+        {displayIsMultiplayer && (
+          <div
+            className="flex flex-col items-center gap-0.5 px-2 py-0.5 rounded"
+            style={{
+              background: "rgba(68,170,255,0.1)",
+              border: "1px solid rgba(68,170,255,0.3)",
+            }}
+          >
+            <span style={{ color: "rgba(68,170,255,0.7)", fontSize: "0.6rem" }}>
+              MODE
+            </span>
+            <span className="font-bold text-xs" style={{ color: "#44aaff" }}>
+              🎮 LOCAL
+            </span>
+          </div>
+        )}
 
         {timerSecs !== null && (
           <div
@@ -1943,7 +2402,7 @@ export default function App() {
           </span>
           {displayBombType !== "normal" && (
             <span
-              title={`Bomb type: ${displayBombType}`}
+              title={`Bomb type: ${displayBombType === "surprise" ? "Random" : displayBombType}`}
               style={{
                 color:
                   displayBombType === "lava"
@@ -1952,7 +2411,9 @@ export default function App() {
                       ? "#44aaff"
                       : displayBombType === "kick"
                         ? "#ffdd00"
-                        : "#ff88ff",
+                        : displayBombType === "surprise"
+                          ? "#ffffff"
+                          : "#ff88ff",
                 fontWeight: "bold",
               }}
             >
@@ -1962,7 +2423,9 @@ export default function App() {
                   ? "🔵 FREEZE"
                   : displayBombType === "kick"
                     ? "🟡 KICK"
-                    : "🟣 PORTAL"}
+                    : displayBombType === "surprise"
+                      ? "❓ RANDOM"
+                      : "🟣 PORTAL"}
             </span>
           )}
           {displayShield > 0 && (
@@ -2072,6 +2535,37 @@ export default function App() {
         />
         <div className="scanlines" />
 
+        {displayIsMultiplayer &&
+          gs?.player2 &&
+          !gs.player2.alive &&
+          gameStatus === "playing" && (
+            <div
+              className="absolute top-2 right-2 px-3 py-2 rounded text-xs font-mono"
+              style={{
+                background: "rgba(68,170,255,0.15)",
+                border: "1px solid rgba(68,170,255,0.4)",
+                color: "#44aaff",
+              }}
+            >
+              💀 P2 waiting for next level
+            </div>
+          )}
+
+        {displayIsMultiplayer &&
+          !gs?.player.alive &&
+          gameStatus === "playing" && (
+            <div
+              className="absolute top-2 left-2 px-3 py-2 rounded text-xs font-mono"
+              style={{
+                background: "rgba(255,100,100,0.15)",
+                border: "1px solid rgba(255,100,100,0.4)",
+                color: "#ff6b8a",
+              }}
+            >
+              💀 YOU: waiting for next level
+            </div>
+          )}
+
         {gameStatus === "levelcomplete" && (
           <div
             className="absolute inset-0 flex flex-col items-center justify-center gap-6"
@@ -2146,7 +2640,9 @@ export default function App() {
               </Button>
               <Button
                 data-ocid="game.menu.button"
-                onClick={() => setScreen("picker")}
+                onClick={() => {
+                  setScreen("picker");
+                }}
                 className="font-mono font-bold tracking-widest uppercase px-8 py-3 border"
                 style={{
                   background: "transparent",
@@ -2211,8 +2707,9 @@ export default function App() {
         className="font-mono text-xs tracking-widest text-center"
         style={{ color: "#2a3a2a" }}
       >
-        ARROWS — MOVE &nbsp;|&nbsp; SPACE — BOMB &nbsp;|&nbsp; Reach portal
-        after clearing all enemies
+        {displayIsMultiplayer
+          ? "P1: ARROWS/R.CTRL — P2: WASD/F | Clear all enemies then reach portal"
+          : "ARROWS — MOVE | R.CTRL — BOMB | Reach portal after clearing all enemies"}
       </div>
 
       <footer className="font-mono text-xs" style={{ color: "#1a2a1a" }}>

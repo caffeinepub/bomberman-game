@@ -8,17 +8,46 @@
 
 import { IDL } from '@icp-sdk/core/candid';
 
+const RoomInfo = IDL.Record({
+  'id': IDL.Text,
+  'hostId': IDL.Principal,
+  'playerCount': IDL.Nat,
+});
+
 export const idlService = IDL.Service({
   'getHighScore' : IDL.Func([], [IDL.Nat], ['query']),
   'submitScore' : IDL.Func([IDL.Nat], [IDL.Nat], []),
+  'createRoom' : IDL.Func([], [IDL.Text], []),
+  'listRooms' : IDL.Func([], [IDL.Vec(RoomInfo)], ['query']),
+  'joinRoom' : IDL.Func([IDL.Text], [IDL.Bool], []),
+  'leaveRoom' : IDL.Func([IDL.Text], [], []),
+  'keepAlive' : IDL.Func([IDL.Text], [], []),
+  'pushGameState' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'getGameState' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+  'submitP2Input' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'getAndClearP2Inputs' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], []),
 });
 
 export const idlInitArgs = [];
 
 export const idlFactory = ({ IDL }) => {
+  const RoomInfo = IDL.Record({
+    'id': IDL.Text,
+    'hostId': IDL.Principal,
+    'playerCount': IDL.Nat,
+  });
   return IDL.Service({
     'getHighScore' : IDL.Func([], [IDL.Nat], ['query']),
     'submitScore' : IDL.Func([IDL.Nat], [IDL.Nat], []),
+    'createRoom' : IDL.Func([], [IDL.Text], []),
+    'listRooms' : IDL.Func([], [IDL.Vec(RoomInfo)], ['query']),
+    'joinRoom' : IDL.Func([IDL.Text], [IDL.Bool], []),
+    'leaveRoom' : IDL.Func([IDL.Text], [], []),
+    'keepAlive' : IDL.Func([IDL.Text], [], []),
+    'pushGameState' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'getGameState' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+    'submitP2Input' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'getAndClearP2Inputs' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], []),
   });
 };
 

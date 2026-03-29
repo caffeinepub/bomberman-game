@@ -346,6 +346,22 @@ export function drawGame(
     if (!flash) drawPlayer(ctx, player, now);
   }
 
+  // Player 2 (multiplayer)
+  if (gs.player2) {
+    const p2 = gs.player2;
+    if (!p2.alive) {
+      // Draw ghost/faded version
+      ctx.save();
+      ctx.globalAlpha = 0.3;
+      drawPlayerP2(ctx, p2, now);
+      ctx.restore();
+    } else {
+      const flash2 =
+        (p2.invincible || p2.shieldActive) && Math.floor(now / 100) % 2 === 0;
+      if (!flash2) drawPlayerP2(ctx, p2, now);
+    }
+  }
+
   // Teleport flash
   if (now < gs.teleportFlashUntil) {
     const alpha = Math.max(
@@ -805,6 +821,81 @@ function drawExplosion(
 }
 
 // ─── Player ───────────────────────────────────────────────────────────────────────────
+function drawPlayerP2(
+  ctx: CanvasRenderingContext2D,
+  player: Player,
+  now: number,
+) {
+  const cx = player.px;
+  const cy = player.py;
+  const r = TILE * 0.3;
+
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + r * 0.85, r * 0.8, r * 0.3, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  if (player.shieldActive) {
+    const shieldGrad = ctx.createRadialGradient(
+      cx,
+      cy,
+      r * 0.5,
+      cx,
+      cy,
+      r * 1.6,
+    );
+    shieldGrad.addColorStop(0, "rgba(68,170,255,0.0)");
+    shieldGrad.addColorStop(0.7, "rgba(68,170,255,0.3)");
+    shieldGrad.addColorStop(1, "rgba(68,170,255,0.0)");
+    ctx.fillStyle = shieldGrad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(68,170,255,0.8)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.4, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  const bodyGrad = ctx.createRadialGradient(
+    cx - r * 0.3,
+    cy - r * 0.3,
+    0,
+    cx,
+    cy,
+    r,
+  );
+  bodyGrad.addColorStop(0, "#88ffdd");
+  bodyGrad.addColorStop(0.6, "#44aaff");
+  bodyGrad.addColorStop(1, "#002244");
+  ctx.fillStyle = bodyGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(200,240,255,0.9)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy - r * 0.1, r * 0.55, r * 0.35, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  const bob = Math.sin(now / 600 + Math.PI) * 1.5;
+  ctx.fillStyle = "rgba(0,20,60,0.9)";
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.18, cy - r * 0.15 + bob, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + r * 0.18, cy - r * 0.15 + bob, r * 0.1, 0, Math.PI * 2);
+  ctx.fill();
+
+  // P2 label
+  ctx.fillStyle = "#44aaff";
+  ctx.font = `bold ${Math.round(r * 0.8)}px monospace`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("2", cx, cy - r * 1.6);
+}
+
 function drawPlayer(
   ctx: CanvasRenderingContext2D,
   player: Player,

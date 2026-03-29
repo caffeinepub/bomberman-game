@@ -130,6 +130,7 @@ export interface Bomb {
   hasDrifted: boolean;
   fuseMs: number;
   bombType: BombType;
+  placedByP2?: boolean;
   // Kick bomb sliding
   sliding?: boolean;
   slideDx?: number;
@@ -213,6 +214,9 @@ export interface GameState {
   rows: number;
   map: number[][];
   player: Player;
+  player2: Player | null;
+  sharedLives: number;
+  isMultiplayer: boolean;
   enemies: Enemy[];
   bombs: Bomb[];
   explosions: Explosion[];

@@ -59,10 +59,42 @@ export function initLevel(
   rows: number,
   level: number,
   prevPlayer?: Player,
+  isMultiplayer?: boolean,
 ): GameState {
   const config = getLevelConfig(level);
   const { map, portalTilePos } = buildMap(cols, rows, level);
   const player = makePlayer(prevPlayer);
+  // Player 2 (multiplayer)
+  let player2: Player | null = null;
+  if (isMultiplayer) {
+    const c2 = tileCenter(3, 1);
+    player2 = {
+      tx: 3,
+      ty: 1,
+      px: c2.x,
+      py: c2.y,
+      moving: false,
+      moveProgress: 0,
+      fromPx: c2.x,
+      fromPy: c2.y,
+      alive: true,
+      lives: 3,
+      maxBombs: 1,
+      explosionRange: 2,
+      speedMultiplier: 1,
+      shieldActive: false,
+      shieldTimer: 0,
+      invincible: false,
+      invincibleTimer: 0,
+      bombFuseLevel: 0,
+      bombType: prevPlayer ? prevPlayer.bombType : "normal",
+      mirrorUntil: 0,
+    };
+    // Ensure spawn area for player2 is clear
+    map[1][3] = TILE_EMPTY;
+    if (map[1][4] === TILE_BREAKABLE) map[1][4] = TILE_EMPTY;
+    if (map[2][3] === TILE_BREAKABLE) map[2][3] = TILE_EMPTY;
+  }
   const enemies = makeEnemies(cols, rows, config, 0);
   const levelModifier = assignLevelModifier(level);
   const challengeFlags = assignChallengeFlags(level);
@@ -289,5 +321,9 @@ export function initLevel(
     // Teleport pads
     teleportPads,
     teleportPadIdCounter,
+    // Multiplayer
+    player2,
+    sharedLives: isMultiplayer ? 6 : 3,
+    isMultiplayer: isMultiplayer ?? false,
   };
 }

@@ -10,9 +10,24 @@ import type { ActorMethod } from '@icp-sdk/core/agent';
 import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
+export interface RoomInfo {
+  'id': string;
+  'hostId': Principal;
+  'playerCount': bigint;
+}
+
 export interface _SERVICE {
-  'getHighScore' : ActorMethod<[], bigint>,
-  'submitScore' : ActorMethod<[bigint], bigint>,
+  'getHighScore' : ActorMethod<[], bigint>;
+  'submitScore' : ActorMethod<[bigint], bigint>;
+  'createRoom' : ActorMethod<[], string>;
+  'listRooms' : ActorMethod<[], RoomInfo[]>;
+  'joinRoom' : ActorMethod<[string], boolean>;
+  'leaveRoom' : ActorMethod<[string], undefined>;
+  'keepAlive' : ActorMethod<[string], undefined>;
+  'pushGameState' : ActorMethod<[string, string], undefined>;
+  'getGameState' : ActorMethod<[string], [] | [string]>;
+  'submitP2Input' : ActorMethod<[string, string], undefined>;
+  'getAndClearP2Inputs' : ActorMethod<[string], string[]>;
 }
 export declare const idlService: IDL.ServiceClass;
 export declare const idlInitArgs: IDL.Type[];
