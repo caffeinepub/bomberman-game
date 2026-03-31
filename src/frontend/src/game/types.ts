@@ -9,7 +9,8 @@ export type PowerUpType =
   | "Curse"
   | "FuseUp"
   | "FuseDown"
-  | "BombType";
+  | "BombType"
+  | "SpeedDown";
 export type BombType =
   | "normal"
   | "lava"

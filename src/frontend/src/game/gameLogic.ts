@@ -47,9 +47,11 @@ export function dropPowerUp(gs: GameState, tx: number, ty: number) {
       else type = "Life";
     }
   } else {
-    if (roll < 0.15) {
+    if (roll < 0.1) {
       type = "Curse";
-    } else if (roll < 0.35 && !noFireUp) {
+    } else if (roll < 0.18) {
+      type = "SpeedDown";
+    } else if (roll < 0.36 && !noFireUp) {
       type = "FireUp";
     } else if (roll < 0.5 && !noBombUp) {
       type = "BombUp";

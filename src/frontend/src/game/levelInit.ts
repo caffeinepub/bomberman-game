@@ -323,7 +323,7 @@ export function initLevel(
     teleportPadIdCounter,
     // Multiplayer
     player2,
-    sharedLives: isMultiplayer ? 6 : 3,
+    sharedLives: 3,
     isMultiplayer: isMultiplayer ?? false,
   };
 }

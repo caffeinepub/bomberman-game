@@ -587,6 +587,7 @@ const POWERUP_COLORS: Record<PowerUpType, string> = {
   FuseUp: "#ff6600",
   FuseDown: "#4488ff",
   BombType: "#ffffff",
+  SpeedDown: "#ff4488",
 };
 const POWERUP_ICONS: Record<PowerUpType, string> = {
   FireUp: "🔥",
@@ -598,6 +599,7 @@ const POWERUP_ICONS: Record<PowerUpType, string> = {
   FuseUp: "⏩",
   FuseDown: "⏪",
   BombType: "💣",
+  SpeedDown: "🐢",
 };
 
 function drawPowerUp(ctx: CanvasRenderingContext2D, pu: PowerUp, now: number) {

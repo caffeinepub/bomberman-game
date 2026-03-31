@@ -36,8 +36,16 @@ export default function App() {
   const { actor } = useActor();
 
   // ─── Co-op state ──────────────────────────────────────────────────────────
-  const [displaySharedLives, setDisplaySharedLives] = useState(6);
+  const [displayLivesP2, setDisplayLivesP2] = useState(3);
   const [displayIsMultiplayer, setDisplayIsMultiplayer] = useState(false);
+  const [displayStatsP2, setDisplayStatsP2] = useState({
+    maxBombs: 1,
+    range: 2,
+    speed: 1,
+  });
+  const [displayBombTypeP2, setDisplayBombTypeP2] =
+    useState<BombType>("normal");
+  const [displayShieldP2, setDisplayShieldP2] = useState(0);
   const p2KeyOrderRef = useRef<string[]>([]);
 
   const [screen, setScreen] = useState<Screen>("picker");
@@ -107,13 +115,18 @@ export default function App() {
     setDisplayModifier(gs.levelModifier);
     setDisplayChallenge(gs.challengeFlags);
     setDisplayIsMultiplayer(mp);
-    if (mp) setDisplaySharedLives(6);
+    if (mp) {
+      setDisplayLivesP2(3);
+      setDisplayStatsP2({ maxBombs: 1, range: 2, speed: 1 });
+      setDisplayBombTypeP2("normal");
+      setDisplayShieldP2(0);
+    }
   }, []);
 
   const restartGame = useCallback(() => {
     const gs = gsRef.current;
     if (!gs) return;
-    const newGs = initLevel(gs.cols, gs.rows, 1);
+    const newGs = initLevel(gs.cols, gs.rows, 1, undefined, gs.isMultiplayer);
     gsRef.current = newGs;
     setDisplayScore(0);
     setDisplayLives(3);
@@ -125,6 +138,14 @@ export default function App() {
     setDisplayTimer(newGs.timerMs);
     setDisplayModifier(newGs.levelModifier);
     setDisplayChallenge(newGs.challengeFlags);
+    if (gs.isMultiplayer) {
+      p2KeyOrderRef.current = [];
+      setDisplayLivesP2(3);
+      setDisplayStatsP2({ maxBombs: 1, range: 2, speed: 1 });
+      setDisplayBombTypeP2("normal");
+      setDisplayShieldP2(0);
+      setDisplayIsMultiplayer(true);
+    }
   }, []);
 
   const advanceLevel = useCallback(() => {
@@ -139,13 +160,23 @@ export default function App() {
       gs.isMultiplayer,
     );
     newGs.score = gs.score;
-    // Multiplayer: carry over sharedLives, respawn dead player2
+    // Multiplayer: carry over per-player lives/bombType, respawn dead players
     if (gs.isMultiplayer && gs.player2) {
-      newGs.sharedLives = gs.sharedLives;
       const prevP2BombType = gs.player2.bombType;
       if (newGs.player2) {
-        newGs.player2.alive = true;
+        // Revive dead P2 with 1 life (they died last level)
+        if (!gs.player2.alive || gs.player2.lives <= 0) {
+          newGs.player2.alive = true;
+          newGs.player2.lives = 1;
+        } else {
+          newGs.player2.lives = gs.player2.lives;
+        }
         newGs.player2.bombType = prevP2BombType;
+      }
+      // Revive dead P1 too
+      if (!gs.player.alive || gs.player.lives <= 0) {
+        newGs.player.alive = true;
+        newGs.player.lives = 1;
       }
       p2KeyOrderRef.current = [];
     }
@@ -155,9 +186,21 @@ export default function App() {
     setDisplayTimer(newGs.timerMs);
     setDisplayModifier(newGs.levelModifier);
     setDisplayChallenge(newGs.challengeFlags);
+    if (gs.isMultiplayer) {
+      p2KeyOrderRef.current = [];
+      setDisplayLivesP2(3);
+      setDisplayStatsP2({ maxBombs: 1, range: 2, speed: 1 });
+      setDisplayBombTypeP2("normal");
+      setDisplayShieldP2(0);
+      setDisplayIsMultiplayer(true);
+    }
     setDisplayStats({ maxBombs: 1, range: 2, speed: 1 });
     setDisplayShield(0);
-    if (gs.isMultiplayer) setDisplaySharedLives(newGs.sharedLives);
+    if (gs.isMultiplayer && newGs.player2) {
+      setDisplayLivesP2(newGs.player2.lives);
+      setDisplayStatsP2({ maxBombs: 1, range: 2, speed: 1 });
+      setDisplayShieldP2(0);
+    }
   }, []);
 
   const onGameOver = useCallback(
@@ -220,6 +263,7 @@ export default function App() {
         hasDrifted: false,
         fuseMs: Math.max(1000, Math.min(4000, 2000 - p2.bombFuseLevel * 500)),
         bombType: newBombType,
+        placedByP2: true,
       });
     }
   }, []);
@@ -310,11 +354,15 @@ export default function App() {
                       player.invincibleTimer = 3000;
                       if (player.lives <= 0) {
                         player.alive = false;
-                        gs.status = "gameover";
-                        setGameStatus("gameover");
-                        setFinalScore(gs.score);
-                        onGameOver(gs.score);
-                        return;
+                        if (gs.isMultiplayer && gs.player2?.alive) {
+                          // P2 still alive, continue
+                        } else {
+                          gs.status = "gameover";
+                          setGameStatus("gameover");
+                          setFinalScore(gs.score);
+                          onGameOver(gs.score);
+                          return;
+                        }
                       }
                       const c = tileCenter(1, 1);
                       player.tx = 1;
@@ -334,11 +382,15 @@ export default function App() {
           const maxWave = Math.min(Math.floor(cols / 2), Math.floor(rows / 2));
           if (gs.fillPhase > maxWave) {
             player.alive = false;
-            gs.status = "gameover";
-            setGameStatus("gameover");
-            setFinalScore(gs.score);
-            onGameOver(gs.score);
-            return;
+            if (gs.isMultiplayer && gs.player2?.alive) {
+              // P2 still alive, continue
+            } else {
+              gs.status = "gameover";
+              setGameStatus("gameover");
+              setFinalScore(gs.score);
+              onGameOver(gs.score);
+              return;
+            }
           }
         }
       }
@@ -464,11 +516,15 @@ export default function App() {
               player.lives -= 1;
               if (player.lives <= 0) {
                 player.alive = false;
-                gs.status = "gameover";
-                setGameStatus("gameover");
-                setFinalScore(gs.score);
-                onGameOver(gs.score);
-                return;
+                if (gs.isMultiplayer && gs.player2?.alive) {
+                  // P2 still alive, continue
+                } else {
+                  gs.status = "gameover";
+                  setGameStatus("gameover");
+                  setFinalScore(gs.score);
+                  onGameOver(gs.score);
+                  return;
+                }
               }
               player.invincible = true;
               player.invincibleTimer = 3000;
@@ -496,6 +552,50 @@ export default function App() {
             enemy.alive = false;
             gs.score += 50;
             if (gs.timerActive && gs.timerMs !== null) gs.timerMs += 30000;
+          }
+        }
+      }
+
+      // Lava fire damage for P2
+      if (gs.isMultiplayer && gs.player2?.alive) {
+        const p2lv = gs.player2;
+        for (const lf of gs.lavaFires) {
+          if (p2lv.invincible || p2lv.tx !== lf.tx || p2lv.ty !== lf.ty)
+            continue;
+          const keyP2lv = "player2";
+          const lastDmgP2lv = gs.lavaDamageCooldown.get(keyP2lv) ?? 0;
+          if (now - lastDmgP2lv >= 500) {
+            gs.lavaDamageCooldown.set(keyP2lv, now);
+            if (p2lv.shieldActive) {
+              p2lv.shieldActive = false;
+              p2lv.shieldTimer = 0;
+              p2lv.invincible = true;
+              p2lv.invincibleTimer = 3000;
+            } else {
+              p2lv.lives -= 1;
+              if (p2lv.lives <= 0) {
+                p2lv.alive = false;
+                if (!gs.player.alive) {
+                  gs.status = "gameover";
+                  setGameStatus("gameover");
+                  setFinalScore(gs.score);
+                  onGameOver(gs.score);
+                  return;
+                }
+              } else {
+                p2lv.invincible = true;
+                p2lv.invincibleTimer = 3000;
+                const cp2lv = tileCenter(1, 1);
+                p2lv.tx = 1;
+                p2lv.ty = 1;
+                p2lv.px = cp2lv.x;
+                p2lv.py = cp2lv.y;
+                p2lv.fromPx = cp2lv.x;
+                p2lv.fromPy = cp2lv.y;
+                p2lv.moving = false;
+              }
+            }
+            break;
           }
         }
       }
@@ -531,11 +631,15 @@ export default function App() {
               player.lives -= 1;
               if (player.lives <= 0) {
                 player.alive = false;
-                gs.status = "gameover";
-                setGameStatus("gameover");
-                setFinalScore(gs.score);
-                onGameOver(gs.score);
-                return;
+                if (gs.isMultiplayer && gs.player2?.alive) {
+                  // P2 still alive, continue
+                } else {
+                  gs.status = "gameover";
+                  setGameStatus("gameover");
+                  setFinalScore(gs.score);
+                  onGameOver(gs.score);
+                  return;
+                }
               }
               player.invincible = true;
               player.invincibleTimer = 3000;
@@ -718,7 +822,17 @@ export default function App() {
           }
 
           if (p2.alive) {
-            const p2Speed = 4 * p2.speedMultiplier;
+            const p2OnIce = gs.icePatches.some(
+              (ip) => ip.tx === p2.tx && ip.ty === p2.ty,
+            );
+            const p2OnSticky = gs.stickyTiles.some(
+              (st) => st.tx === p2.tx && st.ty === p2.ty,
+            );
+            const p2Speed =
+              4 *
+              p2.speedMultiplier *
+              (p2OnIce ? 0.1 : 1) *
+              (p2OnSticky ? 0.3 : 1);
             if (p2.moving) {
               p2.moveProgress += dt * p2Speed;
               if (p2.moveProgress >= 1) {
@@ -727,6 +841,60 @@ export default function App() {
                 p2.px = tc2.x;
                 p2.py = tc2.y;
                 p2.moving = false;
+                // Teleport portal check (portal bomb portals)
+                if (gs.teleportPortals.length === 2) {
+                  const enteredP2 = gs.teleportPortals.find(
+                    (tp) => tp.tx === p2.tx && tp.ty === p2.ty,
+                  );
+                  if (enteredP2) {
+                    const otherP2 = gs.teleportPortals.find(
+                      (tp) => tp.id !== enteredP2.id,
+                    );
+                    if (otherP2) {
+                      const cp2t = tileCenter(otherP2.tx, otherP2.ty);
+                      p2.tx = otherP2.tx;
+                      p2.ty = otherP2.ty;
+                      p2.px = cp2t.x;
+                      p2.py = cp2t.y;
+                      p2.fromPx = cp2t.x;
+                      p2.fromPy = cp2t.y;
+                      p2.moving = false;
+                      gs.teleportFlashUntil = now + 300;
+                    }
+                  }
+                }
+                // Teleport pad check
+                if (gs.teleportPads && gs.teleportPads.length > 0) {
+                  const padP2 = gs.teleportPads.find(
+                    (p) => p.tx === p2.tx && p.ty === p2.ty,
+                  );
+                  if (padP2) {
+                    const partnerP2 = gs.teleportPads.find(
+                      (p) => p.pairId === padP2.pairId && p.id !== padP2.id,
+                    );
+                    if (partnerP2) {
+                      const cp2p = tileCenter(partnerP2.tx, partnerP2.ty);
+                      p2.tx = partnerP2.tx;
+                      p2.ty = partnerP2.ty;
+                      p2.px = cp2p.x;
+                      p2.py = cp2p.y;
+                      p2.fromPx = cp2p.x;
+                      p2.fromPy = cp2p.y;
+                      p2.moving = false;
+                      gs.teleportFlashUntil = now + 300;
+                    }
+                  }
+                }
+                // Level exit portal check for P2
+                if (
+                  gs.portal?.visible &&
+                  p2.tx === gs.portal.tx &&
+                  p2.ty === gs.portal.ty
+                ) {
+                  gs.status = "levelcomplete";
+                  setGameStatus("levelcomplete");
+                  return;
+                }
               } else {
                 const tc2 = tileCenter(p2.tx, p2.ty);
                 p2.px = p2.fromPx + (tc2.x - p2.fromPx) * p2.moveProgress;
@@ -735,17 +903,60 @@ export default function App() {
             }
             if (!p2.moving) {
               const p2ActiveKey = p2KeyOrderRef.current[0];
+              const p2Mirrored = now < p2.mirrorUntil;
               const p2DirMap: Record<string, { dx: number; dy: number }> = {
-                KeyW: { dx: 0, dy: -1 },
-                KeyS: { dx: 0, dy: 1 },
-                KeyA: { dx: -1, dy: 0 },
-                KeyD: { dx: 1, dy: 0 },
+                KeyW: { dx: 0, dy: p2Mirrored ? 1 : -1 },
+                KeyS: { dx: 0, dy: p2Mirrored ? -1 : 1 },
+                KeyA: { dx: p2Mirrored ? 1 : -1, dy: 0 },
+                KeyD: { dx: p2Mirrored ? -1 : 1, dy: 0 },
               };
               const p2Dir = p2ActiveKey ? p2DirMap[p2ActiveKey] : null;
               if (p2Dir) {
                 const ntx2 = p2.tx + p2Dir.dx;
                 const nty2 = p2.ty + p2Dir.dy;
-                if (
+                const kickBombP2 = gs.bombs.find(
+                  (b) =>
+                    b.tx === ntx2 &&
+                    b.ty === nty2 &&
+                    b.bombType === "kick" &&
+                    !b.sliding,
+                );
+                if (kickBombP2) {
+                  let destTx2 = ntx2;
+                  let destTy2 = nty2;
+                  while (true) {
+                    const nx3 = destTx2 + p2Dir.dx;
+                    const ny3 = destTy2 + p2Dir.dy;
+                    if (
+                      !isWalkable(map, cols, rows, nx3, ny3) ||
+                      gs.bombs.some(
+                        (b) =>
+                          b.id !== kickBombP2.id &&
+                          b.tx === nx3 &&
+                          b.ty === ny3,
+                      )
+                    )
+                      break;
+                    destTx2 = nx3;
+                    destTy2 = ny3;
+                  }
+                  kickBombP2.sliding = true;
+                  kickBombP2.slideDx = p2Dir.dx;
+                  kickBombP2.slideDy = p2Dir.dy;
+                  kickBombP2.slideProgress = 0;
+                  kickBombP2.slideFromTx = ntx2;
+                  kickBombP2.slideFromTy = nty2;
+                  kickBombP2.tx = destTx2;
+                  kickBombP2.ty = destTy2;
+                  if (isWalkable(map, cols, rows, ntx2, nty2)) {
+                    p2.fromPx = p2.px;
+                    p2.fromPy = p2.py;
+                    p2.tx = ntx2;
+                    p2.ty = nty2;
+                    p2.moving = true;
+                    p2.moveProgress = 0;
+                  }
+                } else if (
                   isWalkable(map, cols, rows, ntx2, nty2) &&
                   !gs.bombs.some((b) => b.tx === ntx2 && b.ty === nty2)
                 ) {
@@ -784,7 +995,7 @@ export default function App() {
                   gs.score += 30;
                   break;
                 case "Life":
-                  if (gs.sharedLives < 9) gs.sharedLives++;
+                  p2.lives = Math.min(p2.lives + 1, 3);
                   gs.score += 50;
                   break;
                 case "BombType": {
@@ -809,6 +1020,18 @@ export default function App() {
                   p2.bombFuseLevel = Math.max(p2.bombFuseLevel - 1, -2);
                   gs.score += 20;
                   break;
+                case "SpeedDown":
+                  p2.speedMultiplier = Math.max(p2.speedMultiplier - 0.3, 0.3);
+                  setDisplayCurseFlash(true);
+                  setTimeout(() => setDisplayCurseFlash(false), 1500);
+                  break;
+                case "Curse":
+                  p2.speedMultiplier = Math.max(p2.speedMultiplier - 0.3, 0.5);
+                  p2.explosionRange = Math.max(p2.explosionRange - 1, 1);
+                  gs.score = Math.max(gs.score - 10, 0);
+                  setDisplayCurseFlash(true);
+                  setTimeout(() => setDisplayCurseFlash(false), 1500);
+                  break;
               }
             }
 
@@ -821,14 +1044,27 @@ export default function App() {
                     p2.invincible = true;
                     p2.invincibleTimer = 3000;
                   } else {
-                    gs.sharedLives -= 1;
-                    p2.alive = false;
-                    if (gs.sharedLives <= 0 || !gs.player.alive) {
-                      gs.status = "gameover";
-                      setGameStatus("gameover");
-                      setFinalScore(gs.score);
-                      onGameOver(gs.score);
-                      return;
+                    p2.lives -= 1;
+                    if (p2.lives > 0) {
+                      p2.invincible = true;
+                      p2.invincibleTimer = 3000;
+                      const cp2 = tileCenter(1, 1);
+                      p2.tx = 1;
+                      p2.ty = 1;
+                      p2.px = cp2.x;
+                      p2.py = cp2.y;
+                      p2.fromPx = cp2.x;
+                      p2.fromPy = cp2.y;
+                      p2.moving = false;
+                    } else {
+                      p2.alive = false;
+                      if (!gs.player.alive) {
+                        gs.status = "gameover";
+                        setGameStatus("gameover");
+                        setFinalScore(gs.score);
+                        onGameOver(gs.score);
+                        return;
+                      }
                     }
                   }
                   break;
@@ -847,14 +1083,27 @@ export default function App() {
                     p2.invincible = true;
                     p2.invincibleTimer = 3000;
                   } else {
-                    gs.sharedLives -= 1;
-                    p2.alive = false;
-                    if (gs.sharedLives <= 0 || !gs.player.alive) {
-                      gs.status = "gameover";
-                      setGameStatus("gameover");
-                      setFinalScore(gs.score);
-                      onGameOver(gs.score);
-                      return;
+                    p2.lives -= 1;
+                    if (p2.lives > 0) {
+                      p2.invincible = true;
+                      p2.invincibleTimer = 3000;
+                      const cp2e = tileCenter(1, 1);
+                      p2.tx = 1;
+                      p2.ty = 1;
+                      p2.px = cp2e.x;
+                      p2.py = cp2e.y;
+                      p2.fromPx = cp2e.x;
+                      p2.fromPy = cp2e.y;
+                      p2.moving = false;
+                    } else {
+                      p2.alive = false;
+                      if (!gs.player.alive) {
+                        gs.status = "gameover";
+                        setGameStatus("gameover");
+                        setFinalScore(gs.score);
+                        onGameOver(gs.score);
+                        return;
+                      }
                     }
                   }
                   break;
@@ -902,6 +1151,15 @@ export default function App() {
             case "FuseDown":
               player.bombFuseLevel = Math.max(player.bombFuseLevel - 1, -2);
               gs.score += 20;
+              break;
+            case "SpeedDown":
+              player.speedMultiplier = Math.max(
+                player.speedMultiplier - 0.3,
+                0.3,
+              );
+              gs.score += 0;
+              setDisplayCurseFlash(true);
+              setTimeout(() => setDisplayCurseFlash(false), 1500);
               break;
             case "Curse":
               player.speedMultiplier = Math.max(
@@ -973,26 +1231,8 @@ export default function App() {
         if (player.alive && !player.invincible && !player.shieldActive) {
           for (const exp of gs.explosions) {
             if (exp.cells.some((c) => c.x === player.tx && c.y === player.ty)) {
-              if (gs.isMultiplayer) {
-                gs.sharedLives -= 1;
-                player.alive = false;
-                if (gs.sharedLives <= 0 || !gs.player2?.alive) {
-                  gs.status = "gameover";
-                  setGameStatus("gameover");
-                  setFinalScore(gs.score);
-                  onGameOver(gs.score);
-                  return;
-                }
-              } else {
-                player.lives -= 1;
-                if (player.lives <= 0) {
-                  player.alive = false;
-                  gs.status = "gameover";
-                  setGameStatus("gameover");
-                  setFinalScore(gs.score);
-                  onGameOver(gs.score);
-                  return;
-                }
+              player.lives -= 1;
+              if (player.lives > 0) {
                 player.invincible = true;
                 player.invincibleTimer = 3000;
                 const c = tileCenter(1, 1);
@@ -1003,6 +1243,15 @@ export default function App() {
                 player.fromPx = c.x;
                 player.fromPy = c.y;
                 player.moving = false;
+              } else {
+                player.alive = false;
+                if (!gs.isMultiplayer || !gs.player2?.alive) {
+                  gs.status = "gameover";
+                  setGameStatus("gameover");
+                  setFinalScore(gs.score);
+                  onGameOver(gs.score);
+                  return;
+                }
               }
               break;
             }
@@ -1020,36 +1269,29 @@ export default function App() {
                 player.shieldTimer = 0;
                 player.invincible = true;
                 player.invincibleTimer = 3000;
-              } else if (gs.isMultiplayer) {
-                gs.sharedLives -= 1;
-                player.alive = false;
-                if (gs.sharedLives <= 0 || !gs.player2?.alive) {
-                  gs.status = "gameover";
-                  setGameStatus("gameover");
-                  setFinalScore(gs.score);
-                  onGameOver(gs.score);
-                  return;
-                }
               } else {
                 player.lives -= 1;
                 player.invincible = true;
                 player.invincibleTimer = 3000;
                 if (player.lives <= 0) {
                   player.alive = false;
-                  gs.status = "gameover";
-                  setGameStatus("gameover");
-                  setFinalScore(gs.score);
-                  onGameOver(gs.score);
-                  return;
+                  if (!gs.isMultiplayer || !gs.player2?.alive) {
+                    gs.status = "gameover";
+                    setGameStatus("gameover");
+                    setFinalScore(gs.score);
+                    onGameOver(gs.score);
+                    return;
+                  }
+                } else {
+                  const c = tileCenter(1, 1);
+                  player.tx = 1;
+                  player.ty = 1;
+                  player.px = c.x;
+                  player.py = c.y;
+                  player.fromPx = c.x;
+                  player.fromPy = c.y;
+                  player.moving = false;
                 }
-                const c = tileCenter(1, 1);
-                player.tx = 1;
-                player.ty = 1;
-                player.px = c.x;
-                player.py = c.y;
-                player.fromPx = c.x;
-                player.fromPy = c.y;
-                player.moving = false;
               }
               break;
             }
@@ -1323,11 +1565,15 @@ export default function App() {
                   player.invincibleTimer = 3000;
                   if (player.lives <= 0) {
                     player.alive = false;
-                    gs.status = "gameover";
-                    setGameStatus("gameover");
-                    setFinalScore(gs.score);
-                    onGameOver(gs.score);
-                    return;
+                    if (gs.isMultiplayer && gs.player2?.alive) {
+                      // P2 still alive, continue
+                    } else {
+                      gs.status = "gameover";
+                      setGameStatus("gameover");
+                      setFinalScore(gs.score);
+                      onGameOver(gs.score);
+                      return;
+                    }
                   }
                   const cpos = tileCenter(1, 1);
                   player.tx = 1;
@@ -1503,6 +1749,17 @@ export default function App() {
             player.mirrorUntil = now + 3000;
           }
         }
+        if (gs.isMultiplayer && gs.player2?.alive) {
+          for (const mt of gs.mirrorTiles) {
+            if (
+              gs.player2.tx === mt.tx &&
+              gs.player2.ty === mt.ty &&
+              now > gs.player2.mirrorUntil
+            ) {
+              gs.player2.mirrorUntil = now + 3000;
+            }
+          }
+        }
       }
 
       // ── Shrinking Arena ─────────────────────────────────────────────────────
@@ -1527,11 +1784,15 @@ export default function App() {
                   player.invincibleTimer = 3000;
                   if (player.lives <= 0) {
                     player.alive = false;
-                    gs.status = "gameover";
-                    setGameStatus("gameover");
-                    setFinalScore(gs.score);
-                    onGameOver(gs.score);
-                    return;
+                    if (gs.isMultiplayer && gs.player2?.alive) {
+                      // P2 still alive, continue
+                    } else {
+                      gs.status = "gameover";
+                      setGameStatus("gameover");
+                      setFinalScore(gs.score);
+                      onGameOver(gs.score);
+                      return;
+                    }
                   }
                   const cpos = tileCenter(1, 1);
                   player.tx = 1;
@@ -1569,11 +1830,15 @@ export default function App() {
                   player.invincibleTimer = 3000;
                   if (player.lives <= 0) {
                     player.alive = false;
-                    gs.status = "gameover";
-                    setGameStatus("gameover");
-                    setFinalScore(gs.score);
-                    onGameOver(gs.score);
-                    return;
+                    if (gs.isMultiplayer && gs.player2?.alive) {
+                      // P2 still alive, continue
+                    } else {
+                      gs.status = "gameover";
+                      setGameStatus("gameover");
+                      setFinalScore(gs.score);
+                      onGameOver(gs.score);
+                      return;
+                    }
                   }
                   const cpos = tileCenter(1, 1);
                   player.tx = 1;
@@ -1600,10 +1865,19 @@ export default function App() {
 
       // Update display
       setDisplayScore(gs.score);
-      if (gs.isMultiplayer) {
-        setDisplaySharedLives(gs.sharedLives);
-      } else {
-        setDisplayLives(Math.min(player.lives, 3));
+      setDisplayLives(Math.min(player.lives, 3));
+      if (gs.isMultiplayer && gs.player2) {
+        const p2d = gs.player2;
+        setDisplayLivesP2(Math.min(p2d.lives, 3));
+        setDisplayStatsP2({
+          maxBombs: p2d.maxBombs,
+          range: p2d.explosionRange,
+          speed: p2d.speedMultiplier,
+        });
+        setDisplayBombTypeP2(p2d.bombType);
+        setDisplayShieldP2(
+          p2d.shieldActive ? Math.ceil(p2d.shieldTimer / 1000) : 0,
+        );
       }
       setDisplayLevel(gs.level);
       setDisplayShield(
@@ -1699,7 +1973,8 @@ export default function App() {
           ...p2KeyOrderRef.current.filter((k) => k !== e.code),
         ];
       }
-      if (e.code === "KeyF") {
+      if (e.code === "Tab") {
+        e.preventDefault();
         const gs = gsRef.current;
         if (gs && gs.status === "playing") placeP2Bomb(gs);
       }
@@ -1921,7 +2196,7 @@ export default function App() {
               className="font-mono text-xs text-center mt-2"
               style={{ color: "#2a4a6a" }}
             >
-              P1: Arrows + R.Ctrl &nbsp;|&nbsp; P2: WASD + F
+              P1: Arrows + R.Ctrl &nbsp;|&nbsp; P2: WASD + Tab
             </p>
           </div>
 
@@ -2314,209 +2589,380 @@ export default function App() {
       </div>
 
       {/* HUD */}
-      <div
-        className="flex flex-wrap gap-3 items-center font-mono text-xs tracking-widest uppercase px-4 py-2 rounded-sm"
-        style={{
-          background: "rgba(0,0,0,0.5)",
-          border: `1px solid ${theme.uiAccent}22`,
-        }}
-      >
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ color: `${theme.uiAccent}88` }}>Score</span>
-          <span
-            className="font-bold text-base"
-            style={{ color: theme.uiAccent }}
-          >
-            {displayScore.toString().padStart(6, "0")}
-          </span>
-        </div>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ color: `${theme.uiAccent}88` }}>Level</span>
-          <span
-            className="font-bold text-base"
-            style={{ color: theme.uiAccent }}
-          >
-            {displayLevel}
-          </span>
-        </div>
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ color: `${theme.uiAccent}88` }}>
-            {displayIsMultiplayer ? "Shared Lives" : "Lives"}
-          </span>
-          <span className="font-bold text-base" style={{ color: "#ff6b8a" }}>
-            {displayIsMultiplayer
-              ? `❤️ x${displaySharedLives}`
-              : "\u2764\ufe0f".repeat(Math.max(0, displayLives))}
-          </span>
-        </div>
-        {displayIsMultiplayer && (
+      {displayIsMultiplayer ? (
+        /* Co-op dual HUD */
+        <div
+          className="flex gap-2 items-stretch font-mono text-xs tracking-widest uppercase w-full"
+          style={{ maxWidth: "100%" }}
+        >
+          {/* P1 Panel - left */}
           <div
-            className="flex flex-col items-center gap-0.5 px-2 py-0.5 rounded"
+            className="flex flex-col gap-1 px-3 py-2 rounded-sm flex-1"
             style={{
-              background: "rgba(68,170,255,0.1)",
-              border: "1px solid rgba(68,170,255,0.3)",
+              background: "rgba(255,100,100,0.08)",
+              border: "1px solid rgba(255,100,100,0.25)",
             }}
           >
-            <span style={{ color: "rgba(68,170,255,0.7)", fontSize: "0.6rem" }}>
-              MODE
-            </span>
-            <span className="font-bold text-xs" style={{ color: "#44aaff" }}>
-              🎮 LOCAL
-            </span>
-          </div>
-        )}
-
-        {timerSecs !== null && (
-          <div
-            className="flex flex-col items-center gap-0.5"
-            data-ocid="game.loading_state"
-          >
-            <span style={{ color: `${timerColor}88` }}>Timer</span>
-            <span
-              className="font-bold text-base"
-              style={{
-                color: timerFlash ? "transparent" : timerColor,
-                transition: "color 0.1s",
-                minWidth: "2.5rem",
-                textAlign: "center",
-              }}
-            >
-              {timerSecs}s
-            </span>
-          </div>
-        )}
-
-        <div
-          className="w-px self-stretch"
-          style={{ background: `${theme.uiAccent}22` }}
-        />
-        <div className="flex gap-3">
-          <span title="Fire range" style={{ color: "#ff8c00" }}>
-            🔥 {displayStats.range}
-          </span>
-          <span title="Bombs" style={{ color: "#cc88ff" }}>
-            💣 {displayStats.maxBombs}
-          </span>
-          <span title="Speed" style={{ color: "#ffe066" }}>
-            ⚡ {displayStats.speed.toFixed(1)}x
-          </span>
-          {displayBombType !== "normal" && (
-            <span
-              title={`Bomb type: ${displayBombType === "surprise" ? "Random" : displayBombType}`}
-              style={{
-                color:
-                  displayBombType === "lava"
-                    ? "#ff4400"
-                    : displayBombType === "freeze"
-                      ? "#44aaff"
-                      : displayBombType === "kick"
-                        ? "#ffdd00"
-                        : displayBombType === "surprise"
-                          ? "#ffffff"
-                          : "#ff88ff",
-                fontWeight: "bold",
-              }}
-            >
-              {displayBombType === "lava"
-                ? "🔴 LAVA"
-                : displayBombType === "freeze"
-                  ? "🔵 FREEZE"
-                  : displayBombType === "kick"
-                    ? "🟡 KICK"
-                    : displayBombType === "surprise"
-                      ? "❓ RANDOM"
-                      : "🟣 PORTAL"}
-            </span>
-          )}
-          {displayShield > 0 && (
-            <span title="Shield" style={{ color: "#80d8ff" }}>
-              🛡️ {displayShield}s
-            </span>
-          )}
-          {displayCurseFlash && (
-            <span
-              title="Cursed!"
-              style={{ color: "#bb44ff", animation: "pulse 0.3s infinite" }}
-            >
-              ☠️ CURSED!
-            </span>
-          )}
-        </div>
-
-        {displayModifier && (
-          <>
-            <div
-              className="w-px self-stretch"
-              style={{ background: `${theme.uiAccent}22` }}
-            />
-            <div
-              className="px-2 py-0.5 rounded-sm text-xs font-bold"
-              style={{
-                background: "rgba(100,100,255,0.2)",
-                border: "1px solid rgba(100,100,255,0.5)",
-                color: "#aabbff",
-              }}
-            >
-              {modifierLabel[displayModifier]}
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-bold" style={{ color: "#ff6b8a" }}>
+                P1
+              </span>
+              <span style={{ color: "#ff6b8a" }}>
+                {"❤️".repeat(Math.max(0, displayLives))}
+                {displayLives === 0 ? "💀" : ""}
+              </span>
             </div>
-          </>
-        )}
-
-        {displayModifier === "windy" && gs?.windDir && (
-          <span style={{ color: "#80d8ff", fontSize: "1rem" }}>
-            {gs.windDir.x === 1
-              ? "→"
-              : gs.windDir.x === -1
-                ? "←"
-                : gs.windDir.y === 1
-                  ? "↓"
-                  : "↑"}
-          </span>
-        )}
-
-        {displayChallenge.length > 0 && (
-          <>
-            <div
-              className="w-px self-stretch"
-              style={{ background: `${theme.uiAccent}22` }}
-            />
-            <div className="flex gap-2">
-              {displayChallenge.map((flag) => (
-                <div
-                  key={flag}
-                  className="px-2 py-0.5 rounded-sm text-xs font-bold"
+            <div className="flex gap-2 flex-wrap">
+              <span title="Fire range" style={{ color: "#ff8c00" }}>
+                🔥 {displayStats.range}
+              </span>
+              <span title="Bombs" style={{ color: "#cc88ff" }}>
+                💣 {displayStats.maxBombs}
+              </span>
+              <span title="Speed" style={{ color: "#ffe066" }}>
+                ⚡ {displayStats.speed.toFixed(1)}x
+              </span>
+              {displayBombType !== "normal" && (
+                <span
                   style={{
-                    background: "rgba(255,50,50,0.2)",
-                    border: "1px solid rgba(255,50,50,0.5)",
-                    color: "#ff6666",
+                    color:
+                      displayBombType === "lava"
+                        ? "#ff4400"
+                        : displayBombType === "freeze"
+                          ? "#44aaff"
+                          : displayBombType === "kick"
+                            ? "#ffdd00"
+                            : displayBombType === "surprise"
+                              ? "#ffffff"
+                              : "#ff88ff",
+                    fontWeight: "bold",
                   }}
                 >
-                  ⚠️ {challengeLabel[flag]}
-                </div>
-              ))}
+                  {displayBombType === "lava"
+                    ? "🔴 Lava"
+                    : displayBombType === "freeze"
+                      ? "🔵 Freeze"
+                      : displayBombType === "kick"
+                        ? "🟡 Kick"
+                        : displayBombType === "surprise"
+                          ? "❓ Random"
+                          : "🟣 Portal"}
+                </span>
+              )}
+              {displayShield > 0 && (
+                <span style={{ color: "#80d8ff" }}>🛡️ {displayShield}s</span>
+              )}
             </div>
-          </>
-        )}
+          </div>
 
+          {/* Center info */}
+          <div
+            className="flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-sm"
+            style={{
+              background: "rgba(0,0,0,0.5)",
+              border: `1px solid ${theme.uiAccent}22`,
+              minWidth: "8rem",
+            }}
+          >
+            <div className="flex gap-3">
+              <div className="flex flex-col items-center">
+                <span
+                  style={{ color: `${theme.uiAccent}88`, fontSize: "0.6rem" }}
+                >
+                  Score
+                </span>
+                <span
+                  className="font-bold text-sm"
+                  style={{ color: theme.uiAccent }}
+                >
+                  {displayScore.toString().padStart(6, "0")}
+                </span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span
+                  style={{ color: `${theme.uiAccent}88`, fontSize: "0.6rem" }}
+                >
+                  Lv
+                </span>
+                <span
+                  className="font-bold text-sm"
+                  style={{ color: theme.uiAccent }}
+                >
+                  {displayLevel}
+                </span>
+              </div>
+            </div>
+            {timerSecs !== null && (
+              <span
+                className="font-bold"
+                style={{
+                  color: timerFlash ? "transparent" : timerColor,
+                  transition: "color 0.1s",
+                }}
+              >
+                {timerSecs}s
+              </span>
+            )}
+            {displayModifier && (
+              <div
+                className="px-1 py-0.5 rounded-sm text-xs font-bold"
+                style={{
+                  background: "rgba(100,100,255,0.2)",
+                  color: "#aabbff",
+                  fontSize: "0.6rem",
+                }}
+              >
+                {modifierLabel[displayModifier]}
+              </div>
+            )}
+          </div>
+
+          {/* P2 Panel - right */}
+          <div
+            className="flex flex-col gap-1 px-3 py-2 rounded-sm flex-1"
+            style={{
+              background: "rgba(68,170,255,0.08)",
+              border: "1px solid rgba(68,170,255,0.25)",
+            }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-bold" style={{ color: "#44aaff" }}>
+                P2
+              </span>
+              <span style={{ color: "#44aaff" }}>
+                {"❤️".repeat(Math.max(0, displayLivesP2))}
+                {displayLivesP2 === 0 ? "💀" : ""}
+              </span>
+            </div>
+            <div className="flex gap-2 flex-wrap justify-end">
+              <span title="Fire range" style={{ color: "#ff8c00" }}>
+                🔥 {displayStatsP2.range}
+              </span>
+              <span title="Bombs" style={{ color: "#cc88ff" }}>
+                💣 {displayStatsP2.maxBombs}
+              </span>
+              <span title="Speed" style={{ color: "#ffe066" }}>
+                ⚡ {displayStatsP2.speed.toFixed(1)}x
+              </span>
+              {displayBombTypeP2 !== "normal" && (
+                <span
+                  style={{
+                    color:
+                      displayBombTypeP2 === "lava"
+                        ? "#ff4400"
+                        : displayBombTypeP2 === "freeze"
+                          ? "#44aaff"
+                          : displayBombTypeP2 === "kick"
+                            ? "#ffdd00"
+                            : displayBombTypeP2 === "surprise"
+                              ? "#ffffff"
+                              : "#ff88ff",
+                    fontWeight: "bold",
+                  }}
+                >
+                  {displayBombTypeP2 === "lava"
+                    ? "🔴 Lava"
+                    : displayBombTypeP2 === "freeze"
+                      ? "🔵 Freeze"
+                      : displayBombTypeP2 === "kick"
+                        ? "🟡 Kick"
+                        : displayBombTypeP2 === "surprise"
+                          ? "❓ Random"
+                          : "🟣 Portal"}
+                </span>
+              )}
+              {displayShieldP2 > 0 && (
+                <span style={{ color: "#80d8ff" }}>🛡️ {displayShieldP2}s</span>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* Single-player HUD */
         <div
-          className="w-px self-stretch"
-          style={{ background: `${theme.uiAccent}22` }}
-        />
-        <div className="flex flex-col items-center gap-0.5">
-          <span style={{ color: `${theme.uiAccent}88` }}>Best</span>
-          <span className="font-bold" style={{ color: "#ffcc55" }}>
-            {highScore.toString().padStart(5, "0")}
-          </span>
-          {bestLevel > 0 && (
+          className="flex flex-wrap gap-3 items-center font-mono text-xs tracking-widest uppercase px-4 py-2 rounded-sm"
+          style={{
+            background: "rgba(0,0,0,0.5)",
+            border: `1px solid ${theme.uiAccent}22`,
+          }}
+        >
+          <div className="flex flex-col items-center gap-0.5">
+            <span style={{ color: `${theme.uiAccent}88` }}>Score</span>
             <span
-              className="font-mono"
-              style={{ fontSize: "0.6rem", color: theme.uiAccent }}
+              className="font-bold text-base"
+              style={{ color: theme.uiAccent }}
             >
-              Lv {bestLevel}
+              {displayScore.toString().padStart(6, "0")}
+            </span>
+          </div>
+          <div className="flex flex-col items-center gap-0.5">
+            <span style={{ color: `${theme.uiAccent}88` }}>Level</span>
+            <span
+              className="font-bold text-base"
+              style={{ color: theme.uiAccent }}
+            >
+              {displayLevel}
+            </span>
+          </div>
+          <div className="flex flex-col items-center gap-0.5">
+            <span style={{ color: `${theme.uiAccent}88` }}>Lives</span>
+            <span className="font-bold text-base" style={{ color: "#ff6b8a" }}>
+              {"❤️".repeat(Math.max(0, displayLives))}
+            </span>
+          </div>
+
+          {timerSecs !== null && (
+            <div
+              className="flex flex-col items-center gap-0.5"
+              data-ocid="game.loading_state"
+            >
+              <span style={{ color: `${timerColor}88` }}>Timer</span>
+              <span
+                className="font-bold text-base"
+                style={{
+                  color: timerFlash ? "transparent" : timerColor,
+                  transition: "color 0.1s",
+                  minWidth: "2.5rem",
+                  textAlign: "center",
+                }}
+              >
+                {timerSecs}s
+              </span>
+            </div>
+          )}
+
+          <div
+            className="w-px self-stretch"
+            style={{ background: `${theme.uiAccent}22` }}
+          />
+          <div className="flex gap-3">
+            <span title="Fire range" style={{ color: "#ff8c00" }}>
+              🔥 {displayStats.range}
+            </span>
+            <span title="Bombs" style={{ color: "#cc88ff" }}>
+              💣 {displayStats.maxBombs}
+            </span>
+            <span title="Speed" style={{ color: "#ffe066" }}>
+              ⚡ {displayStats.speed.toFixed(1)}x
+            </span>
+            {displayBombType !== "normal" && (
+              <span
+                title={`Bomb type: ${displayBombType === "surprise" ? "Random" : displayBombType}`}
+                style={{
+                  color:
+                    displayBombType === "lava"
+                      ? "#ff4400"
+                      : displayBombType === "freeze"
+                        ? "#44aaff"
+                        : displayBombType === "kick"
+                          ? "#ffdd00"
+                          : displayBombType === "surprise"
+                            ? "#ffffff"
+                            : "#ff88ff",
+                  fontWeight: "bold",
+                }}
+              >
+                {displayBombType === "lava"
+                  ? "🔴 LAVA"
+                  : displayBombType === "freeze"
+                    ? "🔵 FREEZE"
+                    : displayBombType === "kick"
+                      ? "🟡 KICK"
+                      : displayBombType === "surprise"
+                        ? "❓ RANDOM"
+                        : "🟣 PORTAL"}
+              </span>
+            )}
+            {displayShield > 0 && (
+              <span title="Shield" style={{ color: "#80d8ff" }}>
+                🛡️ {displayShield}s
+              </span>
+            )}
+            {displayCurseFlash && (
+              <span
+                title="Cursed!"
+                style={{ color: "#bb44ff", animation: "pulse 0.3s infinite" }}
+              >
+                ☠️ CURSED!
+              </span>
+            )}
+          </div>
+
+          {displayModifier && (
+            <>
+              <div
+                className="w-px self-stretch"
+                style={{ background: `${theme.uiAccent}22` }}
+              />
+              <div
+                className="px-2 py-0.5 rounded-sm text-xs font-bold"
+                style={{
+                  background: "rgba(100,100,255,0.2)",
+                  border: "1px solid rgba(100,100,255,0.5)",
+                  color: "#aabbff",
+                }}
+              >
+                {modifierLabel[displayModifier]}
+              </div>
+            </>
+          )}
+
+          {displayModifier === "windy" && gs?.windDir && (
+            <span style={{ color: "#80d8ff", fontSize: "1rem" }}>
+              {gs.windDir.x === 1
+                ? "→"
+                : gs.windDir.x === -1
+                  ? "←"
+                  : gs.windDir.y === 1
+                    ? "↓"
+                    : "↑"}
             </span>
           )}
+
+          {displayChallenge.length > 0 && (
+            <>
+              <div
+                className="w-px self-stretch"
+                style={{ background: `${theme.uiAccent}22` }}
+              />
+              <div className="flex gap-2">
+                {displayChallenge.map((flag) => (
+                  <div
+                    key={flag}
+                    className="px-2 py-0.5 rounded-sm text-xs font-bold"
+                    style={{
+                      background: "rgba(255,50,50,0.2)",
+                      border: "1px solid rgba(255,50,50,0.5)",
+                      color: "#ff6666",
+                    }}
+                  >
+                    ⚠️ {challengeLabel[flag]}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div
+            className="w-px self-stretch"
+            style={{ background: `${theme.uiAccent}22` }}
+          />
+          <div className="flex flex-col items-center gap-0.5">
+            <span style={{ color: `${theme.uiAccent}88` }}>Best</span>
+            <span className="font-bold" style={{ color: "#ffcc55" }}>
+              {highScore.toString().padStart(5, "0")}
+            </span>
+            {bestLevel > 0 && (
+              <span
+                className="font-mono"
+                style={{ fontSize: "0.6rem", color: theme.uiAccent }}
+              >
+                Lv {bestLevel}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Canvas */}
       <div
@@ -2708,7 +3154,7 @@ export default function App() {
         style={{ color: "#2a3a2a" }}
       >
         {displayIsMultiplayer
-          ? "P1: ARROWS/R.CTRL — P2: WASD/F | Clear all enemies then reach portal"
+          ? "P1: ARROWS/R.CTRL — P2: WASD/TAB | Clear all enemies then reach portal"
           : "ARROWS — MOVE | R.CTRL — BOMB | Reach portal after clearing all enemies"}
       </div>
 
