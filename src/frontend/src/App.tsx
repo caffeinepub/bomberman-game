@@ -443,6 +443,37 @@ export default function App() {
             gs.teleportFlashUntil = now + 300;
           }
         }
+        // Cursed bomb: also apply to P2 in co-op
+        if (gs.isMultiplayer && gs.player2?.alive) {
+          const wasP2Bombs = readyBombs.filter((b) => b.placedByP2);
+          if (
+            gs.cursedBombActive &&
+            wasP2Bombs.length > 0 &&
+            Math.random() < 0.2
+          ) {
+            const openTilesP2: { tx: number; ty: number }[] = [];
+            for (let row = 1; row < rows - 1; row++) {
+              for (let col = 1; col < cols - 1; col++) {
+                if (map[row][col] !== 0) continue;
+                if (gs.bombs.some((b) => b.tx === col && b.ty === row))
+                  continue;
+                openTilesP2.push({ tx: col, ty: row });
+              }
+            }
+            if (openTilesP2.length > 0) {
+              const dest =
+                openTilesP2[Math.floor(Math.random() * openTilesP2.length)];
+              const c = tileCenter(dest.tx, dest.ty);
+              gs.player2.tx = dest.tx;
+              gs.player2.ty = dest.ty;
+              gs.player2.px = c.x;
+              gs.player2.py = c.y;
+              gs.player2.fromPx = c.x;
+              gs.player2.fromPy = c.y;
+              gs.player2.moving = false;
+            }
+          }
+        }
       }
 
       if ((gs.status as string) === "gameover") {
@@ -1585,6 +1616,45 @@ export default function App() {
                   player.moving = false;
                 }
               }
+              // Damage P2
+              if (
+                gs.isMultiplayer &&
+                gs.player2?.alive &&
+                !gs.player2.invincible &&
+                cells.some(
+                  (c) => c.x === gs.player2!.tx && c.y === gs.player2!.ty,
+                )
+              ) {
+                if (gs.player2.shieldActive) {
+                  gs.player2.shieldActive = false;
+                  gs.player2.shieldTimer = 0;
+                  gs.player2.invincible = true;
+                  gs.player2.invincibleTimer = 3000;
+                } else {
+                  gs.player2.lives -= 1;
+                  gs.player2.invincible = true;
+                  gs.player2.invincibleTimer = 3000;
+                  if (gs.player2.lives <= 0) {
+                    gs.player2.alive = false;
+                    if (!gs.player.alive) {
+                      gs.status = "gameover";
+                      setGameStatus("gameover");
+                      setFinalScore(gs.score);
+                      onGameOver(gs.score);
+                      return;
+                    }
+                  } else {
+                    const cp2t = tileCenter(1, 1);
+                    gs.player2.tx = 1;
+                    gs.player2.ty = 1;
+                    gs.player2.px = cp2t.x;
+                    gs.player2.py = cp2t.y;
+                    gs.player2.fromPx = cp2t.x;
+                    gs.player2.fromPy = cp2t.y;
+                    gs.player2.moving = false;
+                  }
+                }
+              }
               // Damage enemies
               for (const enemy of enemies) {
                 if (!enemy.alive) continue;
@@ -1612,6 +1682,17 @@ export default function App() {
               player.tx === tt.tx &&
               player.ty === tt.ty &&
               !player.invincible
+            ) {
+              tt.triggered = true;
+              tt.triggeredAt = now;
+            }
+            // Check if P2 stepped on it
+            if (
+              gs.isMultiplayer &&
+              gs.player2?.alive &&
+              gs.player2.tx === tt.tx &&
+              gs.player2.ty === tt.ty &&
+              !gs.player2.invincible
             ) {
               tt.triggered = true;
               tt.triggeredAt = now;
@@ -1675,6 +1756,28 @@ export default function App() {
               bomb.ty = nty;
             }
           }
+          // Push P2
+          if (
+            gs.isMultiplayer &&
+            gs.player2?.alive &&
+            !gs.player2.moving &&
+            gs.player2.tx === ct.tx &&
+            gs.player2.ty === ct.ty
+          ) {
+            const ntx2 = gs.player2.tx + ct.dir.x;
+            const nty2 = gs.player2.ty + ct.dir.y;
+            if (
+              isWalkable(map, cols, rows, ntx2, nty2) &&
+              !gs.bombs.some((b) => b.tx === ntx2 && b.ty === nty2)
+            ) {
+              gs.player2.fromPx = gs.player2.px;
+              gs.player2.fromPy = gs.player2.py;
+              gs.player2.tx = ntx2;
+              gs.player2.ty = nty2;
+              gs.player2.moving = true;
+              gs.player2.moveProgress = 0;
+            }
+          }
         }
       }
 
@@ -1707,6 +1810,31 @@ export default function App() {
                   player.ty = nty;
                   player.moving = true;
                   player.moveProgress = 0;
+                }
+              }
+            }
+            // Pull P2 if within 2 tiles
+            if (gs.isMultiplayer && gs.player2?.alive && !gs.player2.moving) {
+              const dx2 = gz.tx - gs.player2.tx;
+              const dy2 = gz.ty - gs.player2.ty;
+              const dist2 = Math.abs(dx2) + Math.abs(dy2);
+              if (dist2 > 0 && dist2 <= 2) {
+                const moveX2 =
+                  Math.abs(dx2) >= Math.abs(dy2) ? Math.sign(dx2) : 0;
+                const moveY2 =
+                  Math.abs(dx2) >= Math.abs(dy2) ? 0 : Math.sign(dy2);
+                const ntx2 = gs.player2.tx + moveX2;
+                const nty2 = gs.player2.ty + moveY2;
+                if (
+                  isWalkable(map, cols, rows, ntx2, nty2) &&
+                  !gs.bombs.some((b) => b.tx === ntx2 && b.ty === nty2)
+                ) {
+                  gs.player2.fromPx = gs.player2.px;
+                  gs.player2.fromPy = gs.player2.py;
+                  gs.player2.tx = ntx2;
+                  gs.player2.ty = nty2;
+                  gs.player2.moving = true;
+                  gs.player2.moveProgress = 0;
                 }
               }
             }
@@ -2639,14 +2767,14 @@ export default function App() {
                   }}
                 >
                   {displayBombType === "lava"
-                    ? "🔴 Lava"
+                    ? "🔴 Lava Bomb"
                     : displayBombType === "freeze"
-                      ? "🔵 Freeze"
+                      ? "🔵 Freeze Bomb"
                       : displayBombType === "kick"
-                        ? "🟡 Kick"
+                        ? "🟡 Kick Bomb"
                         : displayBombType === "surprise"
-                          ? "❓ Random"
-                          : "🟣 Portal"}
+                          ? "❓ Random Bomb"
+                          : "🟣 Portal Bomb"}
                 </span>
               )}
               {displayShield > 0 && (
@@ -2761,14 +2889,14 @@ export default function App() {
                   }}
                 >
                   {displayBombTypeP2 === "lava"
-                    ? "🔴 Lava"
+                    ? "🔴 Lava Bomb"
                     : displayBombTypeP2 === "freeze"
-                      ? "🔵 Freeze"
+                      ? "🔵 Freeze Bomb"
                       : displayBombTypeP2 === "kick"
-                        ? "🟡 Kick"
+                        ? "🟡 Kick Bomb"
                         : displayBombTypeP2 === "surprise"
-                          ? "❓ Random"
-                          : "🟣 Portal"}
+                          ? "❓ Random Bomb"
+                          : "🟣 Portal Bomb"}
                 </span>
               )}
               {displayShieldP2 > 0 && (

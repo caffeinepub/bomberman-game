@@ -156,7 +156,9 @@ export function detonateBomb(
       gs.player.lives -= 1;
       if (gs.player.lives <= 0) {
         gs.player.alive = false;
-        gs.status = "gameover";
+        if (!gs.isMultiplayer || !gs.player2?.alive) {
+          gs.status = "gameover";
+        }
       } else {
         gs.player.invincible = true;
         gs.player.invincibleTimer = 3000;
