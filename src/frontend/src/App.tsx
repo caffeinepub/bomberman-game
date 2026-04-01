@@ -2059,6 +2059,7 @@ export default function App() {
           "ArrowRight",
           " ",
           "Control",
+          "Shift",
         ].includes(e.key)
       ) {
         e.preventDefault();
@@ -2101,7 +2102,7 @@ export default function App() {
           ...p2KeyOrderRef.current.filter((k) => k !== e.code),
         ];
       }
-      if (e.code === "Tab") {
+      if (e.key === "Shift") {
         e.preventDefault();
         const gs = gsRef.current;
         if (gs && gs.status === "playing") placeP2Bomb(gs);
@@ -2324,7 +2325,7 @@ export default function App() {
               className="font-mono text-xs text-center mt-2"
               style={{ color: "#2a4a6a" }}
             >
-              P1: Arrows + R.Ctrl &nbsp;|&nbsp; P2: WASD + Tab
+              P1: Arrows + R.Ctrl &nbsp;|&nbsp; P2: WASD + Shift
             </p>
           </div>
 
@@ -3282,7 +3283,7 @@ export default function App() {
         style={{ color: "#2a3a2a" }}
       >
         {displayIsMultiplayer
-          ? "P1: ARROWS/R.CTRL — P2: WASD/TAB | Clear all enemies then reach portal"
+          ? "P1: ARROWS/R.CTRL — P2: WASD/SHIFT | Clear all enemies then reach portal"
           : "ARROWS — MOVE | R.CTRL — BOMB | Reach portal after clearing all enemies"}
       </div>
 
