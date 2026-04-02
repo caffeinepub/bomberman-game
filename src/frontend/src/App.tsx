@@ -834,316 +834,6 @@ export default function App() {
           }
         }
 
-        // ─── Player 2 Movement & Logic (multiplayer host) ──────────────────
-        if (gs.isMultiplayer && gs.player2) {
-          const p2 = gs.player2;
-          if (p2.invincible) {
-            p2.invincibleTimer -= dt * 1000;
-            if (p2.invincibleTimer <= 0) {
-              p2.invincible = false;
-              p2.invincibleTimer = 0;
-            }
-          }
-          if (p2.shieldActive) {
-            p2.shieldTimer -= dt * 1000;
-            if (p2.shieldTimer <= 0) {
-              p2.shieldActive = false;
-              p2.shieldTimer = 0;
-            }
-          }
-
-          if (p2.alive) {
-            const p2OnIce = gs.icePatches.some(
-              (ip) => ip.tx === p2.tx && ip.ty === p2.ty,
-            );
-            const p2OnSticky = gs.stickyTiles.some(
-              (st) => st.tx === p2.tx && st.ty === p2.ty,
-            );
-            const p2Speed =
-              4 *
-              p2.speedMultiplier *
-              (p2OnIce ? 0.1 : 1) *
-              (p2OnSticky ? 0.3 : 1);
-            if (p2.moving) {
-              p2.moveProgress += dt * p2Speed;
-              if (p2.moveProgress >= 1) {
-                p2.moveProgress = 1;
-                const tc2 = tileCenter(p2.tx, p2.ty);
-                p2.px = tc2.x;
-                p2.py = tc2.y;
-                p2.moving = false;
-                // Teleport portal check (portal bomb portals)
-                if (gs.teleportPortals.length === 2) {
-                  const enteredP2 = gs.teleportPortals.find(
-                    (tp) => tp.tx === p2.tx && tp.ty === p2.ty,
-                  );
-                  if (enteredP2) {
-                    const otherP2 = gs.teleportPortals.find(
-                      (tp) => tp.id !== enteredP2.id,
-                    );
-                    if (otherP2) {
-                      const cp2t = tileCenter(otherP2.tx, otherP2.ty);
-                      p2.tx = otherP2.tx;
-                      p2.ty = otherP2.ty;
-                      p2.px = cp2t.x;
-                      p2.py = cp2t.y;
-                      p2.fromPx = cp2t.x;
-                      p2.fromPy = cp2t.y;
-                      p2.moving = false;
-                      gs.teleportFlashUntil = now + 300;
-                    }
-                  }
-                }
-                // Teleport pad check
-                if (gs.teleportPads && gs.teleportPads.length > 0) {
-                  const padP2 = gs.teleportPads.find(
-                    (p) => p.tx === p2.tx && p.ty === p2.ty,
-                  );
-                  if (padP2) {
-                    const partnerP2 = gs.teleportPads.find(
-                      (p) => p.pairId === padP2.pairId && p.id !== padP2.id,
-                    );
-                    if (partnerP2) {
-                      const cp2p = tileCenter(partnerP2.tx, partnerP2.ty);
-                      p2.tx = partnerP2.tx;
-                      p2.ty = partnerP2.ty;
-                      p2.px = cp2p.x;
-                      p2.py = cp2p.y;
-                      p2.fromPx = cp2p.x;
-                      p2.fromPy = cp2p.y;
-                      p2.moving = false;
-                      gs.teleportFlashUntil = now + 300;
-                    }
-                  }
-                }
-                // Level exit portal check for P2
-                if (
-                  gs.portal?.visible &&
-                  p2.tx === gs.portal.tx &&
-                  p2.ty === gs.portal.ty
-                ) {
-                  gs.status = "levelcomplete";
-                  setGameStatus("levelcomplete");
-                  return;
-                }
-              } else {
-                const tc2 = tileCenter(p2.tx, p2.ty);
-                p2.px = p2.fromPx + (tc2.x - p2.fromPx) * p2.moveProgress;
-                p2.py = p2.fromPy + (tc2.y - p2.fromPy) * p2.moveProgress;
-              }
-            }
-            if (!p2.moving) {
-              const p2ActiveKey = p2KeyOrderRef.current[0];
-              const p2Mirrored = now < p2.mirrorUntil;
-              const p2DirMap: Record<string, { dx: number; dy: number }> = {
-                KeyW: { dx: 0, dy: p2Mirrored ? 1 : -1 },
-                KeyS: { dx: 0, dy: p2Mirrored ? -1 : 1 },
-                KeyA: { dx: p2Mirrored ? 1 : -1, dy: 0 },
-                KeyD: { dx: p2Mirrored ? -1 : 1, dy: 0 },
-              };
-              const p2Dir = p2ActiveKey ? p2DirMap[p2ActiveKey] : null;
-              if (p2Dir) {
-                const ntx2 = p2.tx + p2Dir.dx;
-                const nty2 = p2.ty + p2Dir.dy;
-                const kickBombP2 = gs.bombs.find(
-                  (b) =>
-                    b.tx === ntx2 &&
-                    b.ty === nty2 &&
-                    b.bombType === "kick" &&
-                    !b.sliding,
-                );
-                if (kickBombP2) {
-                  let destTx2 = ntx2;
-                  let destTy2 = nty2;
-                  while (true) {
-                    const nx3 = destTx2 + p2Dir.dx;
-                    const ny3 = destTy2 + p2Dir.dy;
-                    if (
-                      !isWalkable(map, cols, rows, nx3, ny3) ||
-                      gs.bombs.some(
-                        (b) =>
-                          b.id !== kickBombP2.id &&
-                          b.tx === nx3 &&
-                          b.ty === ny3,
-                      )
-                    )
-                      break;
-                    destTx2 = nx3;
-                    destTy2 = ny3;
-                  }
-                  kickBombP2.sliding = true;
-                  kickBombP2.slideDx = p2Dir.dx;
-                  kickBombP2.slideDy = p2Dir.dy;
-                  kickBombP2.slideProgress = 0;
-                  kickBombP2.slideFromTx = ntx2;
-                  kickBombP2.slideFromTy = nty2;
-                  kickBombP2.tx = destTx2;
-                  kickBombP2.ty = destTy2;
-                  if (isWalkable(map, cols, rows, ntx2, nty2)) {
-                    p2.fromPx = p2.px;
-                    p2.fromPy = p2.py;
-                    p2.tx = ntx2;
-                    p2.ty = nty2;
-                    p2.moving = true;
-                    p2.moveProgress = 0;
-                  }
-                } else if (
-                  isWalkable(map, cols, rows, ntx2, nty2) &&
-                  !gs.bombs.some((b) => b.tx === ntx2 && b.ty === nty2)
-                ) {
-                  p2.fromPx = p2.px;
-                  p2.fromPy = p2.py;
-                  p2.tx = ntx2;
-                  p2.ty = nty2;
-                  p2.moving = true;
-                  p2.moveProgress = 0;
-                }
-              }
-            }
-
-            // P2 power-up collection
-            const p2Pickups = gs.powerUps.filter(
-              (pu) => pu.tx === p2.tx && pu.ty === p2.ty,
-            );
-            for (const pu of p2Pickups) {
-              gs.powerUps = gs.powerUps.filter((p) => p.id !== pu.id);
-              switch (pu.type) {
-                case "FireUp":
-                  p2.explosionRange = Math.min(p2.explosionRange + 1, 8);
-                  gs.score += 20;
-                  break;
-                case "BombUp":
-                  p2.maxBombs = Math.min(p2.maxBombs + 1, 8);
-                  gs.score += 20;
-                  break;
-                case "SpeedUp":
-                  p2.speedMultiplier = Math.min(p2.speedMultiplier + 0.3, 2.5);
-                  gs.score += 20;
-                  break;
-                case "Shield":
-                  p2.shieldActive = true;
-                  p2.shieldTimer = 5000;
-                  gs.score += 30;
-                  break;
-                case "Life":
-                  p2.lives = Math.min(p2.lives + 1, 3);
-                  gs.score += 50;
-                  break;
-                case "BombType": {
-                  const types2: BombType[] = [
-                    "normal",
-                    "lava",
-                    "freeze",
-                    "kick",
-                    "portal",
-                    "surprise",
-                  ];
-                  p2.bombType =
-                    types2[Math.floor(Math.random() * types2.length)];
-                  gs.score += 30;
-                  break;
-                }
-                case "FuseUp":
-                  p2.bombFuseLevel = Math.min(p2.bombFuseLevel + 1, 2);
-                  gs.score += 20;
-                  break;
-                case "FuseDown":
-                  p2.bombFuseLevel = Math.max(p2.bombFuseLevel - 1, -2);
-                  gs.score += 20;
-                  break;
-                case "SpeedDown":
-                  p2.speedMultiplier = Math.max(p2.speedMultiplier - 0.3, 0.3);
-                  setDisplayCurseFlash(true);
-                  setTimeout(() => setDisplayCurseFlash(false), 1500);
-                  break;
-                case "Curse":
-                  p2.speedMultiplier = Math.max(p2.speedMultiplier - 0.3, 0.5);
-                  p2.explosionRange = Math.max(p2.explosionRange - 1, 1);
-                  gs.score = Math.max(gs.score - 10, 0);
-                  setDisplayCurseFlash(true);
-                  setTimeout(() => setDisplayCurseFlash(false), 1500);
-                  break;
-              }
-            }
-
-            // P2 explosion hit check
-            if (!p2.invincible && !p2.shieldActive) {
-              for (const exp of gs.explosions) {
-                if (exp.cells.some((c) => c.x === p2.tx && c.y === p2.ty)) {
-                  if (p2.shieldActive) {
-                    p2.shieldActive = false;
-                    p2.invincible = true;
-                    p2.invincibleTimer = 3000;
-                  } else {
-                    p2.lives -= 1;
-                    if (p2.lives > 0) {
-                      p2.invincible = true;
-                      p2.invincibleTimer = 3000;
-                      const cp2 = tileCenter(1, 1);
-                      p2.tx = 1;
-                      p2.ty = 1;
-                      p2.px = cp2.x;
-                      p2.py = cp2.y;
-                      p2.fromPx = cp2.x;
-                      p2.fromPy = cp2.y;
-                      p2.moving = false;
-                    } else {
-                      p2.alive = false;
-                      if (!gs.player.alive) {
-                        gs.status = "gameover";
-                        setGameStatus("gameover");
-                        setFinalScore(gs.score);
-                        onGameOver(gs.score);
-                        return;
-                      }
-                    }
-                  }
-                  break;
-                }
-              }
-            }
-
-            // P2 enemy collision
-            if (!p2.invincible) {
-              for (const enemy of enemies) {
-                if (!enemy.alive) continue;
-                const dist2 = Math.hypot(enemy.px - p2.px, enemy.py - p2.py);
-                if (dist2 < TILE * 0.6) {
-                  if (p2.shieldActive) {
-                    p2.shieldActive = false;
-                    p2.invincible = true;
-                    p2.invincibleTimer = 3000;
-                  } else {
-                    p2.lives -= 1;
-                    if (p2.lives > 0) {
-                      p2.invincible = true;
-                      p2.invincibleTimer = 3000;
-                      const cp2e = tileCenter(1, 1);
-                      p2.tx = 1;
-                      p2.ty = 1;
-                      p2.px = cp2e.x;
-                      p2.py = cp2e.y;
-                      p2.fromPx = cp2e.x;
-                      p2.fromPy = cp2e.y;
-                      p2.moving = false;
-                    } else {
-                      p2.alive = false;
-                      if (!gs.player.alive) {
-                        gs.status = "gameover";
-                        setGameStatus("gameover");
-                        setFinalScore(gs.score);
-                        onGameOver(gs.score);
-                        return;
-                      }
-                    }
-                  }
-                  break;
-                }
-              }
-            }
-          }
-        }
-
         // Collect power-ups
         const pickedUp = gs.powerUps.filter(
           (p) => p.tx === player.tx && p.ty === player.ty,
@@ -1338,6 +1028,313 @@ export default function App() {
           gs.status = "levelcomplete";
           setGameStatus("levelcomplete");
           return;
+        }
+      }
+
+      // ─── Player 2 Movement & Logic (multiplayer host) ──────────────────
+      if (gs.isMultiplayer && gs.player2) {
+        const p2 = gs.player2;
+        if (p2.invincible) {
+          p2.invincibleTimer -= dt * 1000;
+          if (p2.invincibleTimer <= 0) {
+            p2.invincible = false;
+            p2.invincibleTimer = 0;
+          }
+        }
+        if (p2.shieldActive) {
+          p2.shieldTimer -= dt * 1000;
+          if (p2.shieldTimer <= 0) {
+            p2.shieldActive = false;
+            p2.shieldTimer = 0;
+          }
+        }
+
+        if (p2.alive) {
+          const p2OnIce = gs.icePatches.some(
+            (ip) => ip.tx === p2.tx && ip.ty === p2.ty,
+          );
+          const p2OnSticky = gs.stickyTiles.some(
+            (st) => st.tx === p2.tx && st.ty === p2.ty,
+          );
+          const p2Speed =
+            4 *
+            p2.speedMultiplier *
+            (p2OnIce ? 0.1 : 1) *
+            (p2OnSticky ? 0.3 : 1);
+          if (p2.moving) {
+            p2.moveProgress += dt * p2Speed;
+            if (p2.moveProgress >= 1) {
+              p2.moveProgress = 1;
+              const tc2 = tileCenter(p2.tx, p2.ty);
+              p2.px = tc2.x;
+              p2.py = tc2.y;
+              p2.moving = false;
+              // Teleport portal check (portal bomb portals)
+              if (gs.teleportPortals.length === 2) {
+                const enteredP2 = gs.teleportPortals.find(
+                  (tp) => tp.tx === p2.tx && tp.ty === p2.ty,
+                );
+                if (enteredP2) {
+                  const otherP2 = gs.teleportPortals.find(
+                    (tp) => tp.id !== enteredP2.id,
+                  );
+                  if (otherP2) {
+                    const cp2t = tileCenter(otherP2.tx, otherP2.ty);
+                    p2.tx = otherP2.tx;
+                    p2.ty = otherP2.ty;
+                    p2.px = cp2t.x;
+                    p2.py = cp2t.y;
+                    p2.fromPx = cp2t.x;
+                    p2.fromPy = cp2t.y;
+                    p2.moving = false;
+                    gs.teleportFlashUntil = now + 300;
+                  }
+                }
+              }
+              // Teleport pad check
+              if (gs.teleportPads && gs.teleportPads.length > 0) {
+                const padP2 = gs.teleportPads.find(
+                  (p) => p.tx === p2.tx && p.ty === p2.ty,
+                );
+                if (padP2) {
+                  const partnerP2 = gs.teleportPads.find(
+                    (p) => p.pairId === padP2.pairId && p.id !== padP2.id,
+                  );
+                  if (partnerP2) {
+                    const cp2p = tileCenter(partnerP2.tx, partnerP2.ty);
+                    p2.tx = partnerP2.tx;
+                    p2.ty = partnerP2.ty;
+                    p2.px = cp2p.x;
+                    p2.py = cp2p.y;
+                    p2.fromPx = cp2p.x;
+                    p2.fromPy = cp2p.y;
+                    p2.moving = false;
+                    gs.teleportFlashUntil = now + 300;
+                  }
+                }
+              }
+              // Level exit portal check for P2
+              if (
+                gs.portal?.visible &&
+                p2.tx === gs.portal.tx &&
+                p2.ty === gs.portal.ty
+              ) {
+                gs.status = "levelcomplete";
+                setGameStatus("levelcomplete");
+                return;
+              }
+            } else {
+              const tc2 = tileCenter(p2.tx, p2.ty);
+              p2.px = p2.fromPx + (tc2.x - p2.fromPx) * p2.moveProgress;
+              p2.py = p2.fromPy + (tc2.y - p2.fromPy) * p2.moveProgress;
+            }
+          }
+          if (!p2.moving) {
+            const p2ActiveKey = p2KeyOrderRef.current[0];
+            const p2Mirrored = now < p2.mirrorUntil;
+            const p2DirMap: Record<string, { dx: number; dy: number }> = {
+              KeyW: { dx: 0, dy: p2Mirrored ? 1 : -1 },
+              KeyS: { dx: 0, dy: p2Mirrored ? -1 : 1 },
+              KeyA: { dx: p2Mirrored ? 1 : -1, dy: 0 },
+              KeyD: { dx: p2Mirrored ? -1 : 1, dy: 0 },
+            };
+            const p2Dir = p2ActiveKey ? p2DirMap[p2ActiveKey] : null;
+            if (p2Dir) {
+              const ntx2 = p2.tx + p2Dir.dx;
+              const nty2 = p2.ty + p2Dir.dy;
+              const kickBombP2 = gs.bombs.find(
+                (b) =>
+                  b.tx === ntx2 &&
+                  b.ty === nty2 &&
+                  b.bombType === "kick" &&
+                  !b.sliding,
+              );
+              if (kickBombP2) {
+                let destTx2 = ntx2;
+                let destTy2 = nty2;
+                while (true) {
+                  const nx3 = destTx2 + p2Dir.dx;
+                  const ny3 = destTy2 + p2Dir.dy;
+                  if (
+                    !isWalkable(map, cols, rows, nx3, ny3) ||
+                    gs.bombs.some(
+                      (b) =>
+                        b.id !== kickBombP2.id && b.tx === nx3 && b.ty === ny3,
+                    )
+                  )
+                    break;
+                  destTx2 = nx3;
+                  destTy2 = ny3;
+                }
+                kickBombP2.sliding = true;
+                kickBombP2.slideDx = p2Dir.dx;
+                kickBombP2.slideDy = p2Dir.dy;
+                kickBombP2.slideProgress = 0;
+                kickBombP2.slideFromTx = ntx2;
+                kickBombP2.slideFromTy = nty2;
+                kickBombP2.tx = destTx2;
+                kickBombP2.ty = destTy2;
+                if (isWalkable(map, cols, rows, ntx2, nty2)) {
+                  p2.fromPx = p2.px;
+                  p2.fromPy = p2.py;
+                  p2.tx = ntx2;
+                  p2.ty = nty2;
+                  p2.moving = true;
+                  p2.moveProgress = 0;
+                }
+              } else if (
+                isWalkable(map, cols, rows, ntx2, nty2) &&
+                !gs.bombs.some((b) => b.tx === ntx2 && b.ty === nty2)
+              ) {
+                p2.fromPx = p2.px;
+                p2.fromPy = p2.py;
+                p2.tx = ntx2;
+                p2.ty = nty2;
+                p2.moving = true;
+                p2.moveProgress = 0;
+              }
+            }
+          }
+
+          // P2 power-up collection
+          const p2Pickups = gs.powerUps.filter(
+            (pu) => pu.tx === p2.tx && pu.ty === p2.ty,
+          );
+          for (const pu of p2Pickups) {
+            gs.powerUps = gs.powerUps.filter((p) => p.id !== pu.id);
+            switch (pu.type) {
+              case "FireUp":
+                p2.explosionRange = Math.min(p2.explosionRange + 1, 8);
+                gs.score += 20;
+                break;
+              case "BombUp":
+                p2.maxBombs = Math.min(p2.maxBombs + 1, 8);
+                gs.score += 20;
+                break;
+              case "SpeedUp":
+                p2.speedMultiplier = Math.min(p2.speedMultiplier + 0.3, 2.5);
+                gs.score += 20;
+                break;
+              case "Shield":
+                p2.shieldActive = true;
+                p2.shieldTimer = 5000;
+                gs.score += 30;
+                break;
+              case "Life":
+                p2.lives = Math.min(p2.lives + 1, 3);
+                gs.score += 50;
+                break;
+              case "BombType": {
+                const types2: BombType[] = [
+                  "normal",
+                  "lava",
+                  "freeze",
+                  "kick",
+                  "portal",
+                  "surprise",
+                ];
+                p2.bombType = types2[Math.floor(Math.random() * types2.length)];
+                gs.score += 30;
+                break;
+              }
+              case "FuseUp":
+                p2.bombFuseLevel = Math.min(p2.bombFuseLevel + 1, 2);
+                gs.score += 20;
+                break;
+              case "FuseDown":
+                p2.bombFuseLevel = Math.max(p2.bombFuseLevel - 1, -2);
+                gs.score += 20;
+                break;
+              case "SpeedDown":
+                p2.speedMultiplier = Math.max(p2.speedMultiplier - 0.3, 0.3);
+                setDisplayCurseFlash(true);
+                setTimeout(() => setDisplayCurseFlash(false), 1500);
+                break;
+              case "Curse":
+                p2.speedMultiplier = Math.max(p2.speedMultiplier - 0.3, 0.5);
+                p2.explosionRange = Math.max(p2.explosionRange - 1, 1);
+                gs.score = Math.max(gs.score - 10, 0);
+                setDisplayCurseFlash(true);
+                setTimeout(() => setDisplayCurseFlash(false), 1500);
+                break;
+            }
+          }
+
+          // P2 explosion hit check
+          if (!p2.invincible && !p2.shieldActive) {
+            for (const exp of gs.explosions) {
+              if (exp.cells.some((c) => c.x === p2.tx && c.y === p2.ty)) {
+                if (p2.shieldActive) {
+                  p2.shieldActive = false;
+                  p2.invincible = true;
+                  p2.invincibleTimer = 3000;
+                } else {
+                  p2.lives -= 1;
+                  if (p2.lives > 0) {
+                    p2.invincible = true;
+                    p2.invincibleTimer = 3000;
+                    const cp2 = tileCenter(1, 1);
+                    p2.tx = 1;
+                    p2.ty = 1;
+                    p2.px = cp2.x;
+                    p2.py = cp2.y;
+                    p2.fromPx = cp2.x;
+                    p2.fromPy = cp2.y;
+                    p2.moving = false;
+                  } else {
+                    p2.alive = false;
+                    if (!gs.player.alive) {
+                      gs.status = "gameover";
+                      setGameStatus("gameover");
+                      setFinalScore(gs.score);
+                      onGameOver(gs.score);
+                      return;
+                    }
+                  }
+                }
+                break;
+              }
+            }
+          }
+
+          // P2 enemy collision
+          if (!p2.invincible) {
+            for (const enemy of enemies) {
+              if (!enemy.alive) continue;
+              const dist2 = Math.hypot(enemy.px - p2.px, enemy.py - p2.py);
+              if (dist2 < TILE * 0.6) {
+                if (p2.shieldActive) {
+                  p2.shieldActive = false;
+                  p2.invincible = true;
+                  p2.invincibleTimer = 3000;
+                } else {
+                  p2.lives -= 1;
+                  if (p2.lives > 0) {
+                    p2.invincible = true;
+                    p2.invincibleTimer = 3000;
+                    const cp2e = tileCenter(1, 1);
+                    p2.tx = 1;
+                    p2.ty = 1;
+                    p2.px = cp2e.x;
+                    p2.py = cp2e.y;
+                    p2.fromPx = cp2e.x;
+                    p2.fromPy = cp2e.y;
+                    p2.moving = false;
+                  } else {
+                    p2.alive = false;
+                    if (!gs.player.alive) {
+                      gs.status = "gameover";
+                      setGameStatus("gameover");
+                      setFinalScore(gs.score);
+                      onGameOver(gs.score);
+                      return;
+                    }
+                  }
+                }
+                break;
+              }
+            }
+          }
         }
       }
 
@@ -2604,40 +2601,90 @@ export default function App() {
           className="font-mono text-xs space-y-1 text-center relative z-10"
           style={{ color: "#5a9a7a", letterSpacing: "0.1em" }}
         >
-          <p>⬆⬇⬅➡ MOVE &nbsp;·&nbsp; SPACE BOMB</p>
+          <p>P1: ⬆⬇⬅➡ MOVE &nbsp;·&nbsp; R.CTRL BOMB</p>
+          <p style={{ color: "#4a8aaa" }}>
+            P2: WASD MOVE &nbsp;·&nbsp; SHIFT BOMB
+          </p>
           <p style={{ color: "#3a6a5a" }}>
             💣 Destroy boxes · ✨ Collect items · 🌀 Find the portal
           </p>
         </div>
 
-        <div className="flex gap-4 text-center relative z-10">
-          {[
-            { icon: "🔥", label: "Fire Up", color: "#ff8040" },
-            { icon: "💣", label: "Bomb Up", color: "#ff5050" },
-            { icon: "⚡", label: "Speed", color: "#ffd700" },
-            { icon: "🛡️", label: "Shield", color: "#40d0ff" },
-            { icon: "❤️", label: "Life", color: "#ff6080" },
-            { icon: "☠️", label: "Curse", color: "#a060ff" },
-          ].map(({ icon, label, color }) => (
-            <div key={label} className="flex flex-col items-center gap-1">
-              <span
-                className="text-xl"
-                style={{ filter: `drop-shadow(0 0 6px ${color}80)` }}
-              >
-                {icon}
-              </span>
-              <span
-                className="font-mono"
-                style={{
-                  fontSize: "0.55rem",
-                  color: `${color}99`,
-                  letterSpacing: "0.05em",
-                }}
-              >
-                {label}
-              </span>
-            </div>
-          ))}
+        <div className="flex flex-col items-center gap-3 relative z-10">
+          <p
+            className="font-mono text-xs tracking-widest uppercase"
+            style={{ color: "#2a4a3a" }}
+          >
+            Items
+          </p>
+          <div className="flex flex-wrap justify-center gap-3">
+            {[
+              { icon: "🔥", label: "Fire Up", color: "#ff8040" },
+              { icon: "💣", label: "Bomb Up", color: "#ff5050" },
+              { icon: "⚡", label: "Speed+", color: "#ffd700" },
+              { icon: "🐢", label: "Speed-", color: "#99aa44" },
+              { icon: "⏱️", label: "Fuse+", color: "#44ddaa" },
+              { icon: "🐌", label: "Fuse-", color: "#cc8844" },
+              { icon: "🛡️", label: "Shield", color: "#40d0ff" },
+              { icon: "❤️", label: "Life", color: "#ff6080" },
+              { icon: "☠️", label: "Curse", color: "#a060ff" },
+              { icon: "🎁", label: "Bomb Type", color: "#88ffcc" },
+            ].map(({ icon, label, color }) => (
+              <div key={label} className="flex flex-col items-center gap-1">
+                <span
+                  className="text-xl"
+                  style={{ filter: `drop-shadow(0 0 6px ${color}80)` }}
+                >
+                  {icon}
+                </span>
+                <span
+                  className="font-mono"
+                  style={{
+                    fontSize: "0.55rem",
+                    color: `${color}99`,
+                    letterSpacing: "0.05em",
+                  }}
+                >
+                  {label}
+                </span>
+              </div>
+            ))}
+          </div>
+          <p
+            className="font-mono text-xs tracking-widest uppercase mt-1"
+            style={{ color: "#2a4a3a" }}
+          >
+            Bombs
+          </p>
+          <div className="flex flex-wrap justify-center gap-3">
+            {[
+              { icon: "💣", label: "Normal", color: "#aaaaaa" },
+              { icon: "🌋", label: "Lava", color: "#ff5030" },
+              { icon: "❄️", label: "Freeze", color: "#60d0ff" },
+              { icon: "👟", label: "Kick", color: "#ffcc44" },
+              { icon: "🌀", label: "Portal", color: "#cc44ff" },
+              { icon: "❓", label: "Surprise", color: "#ff88cc" },
+            ].map(({ icon, label, color }) => (
+              <div key={label} className="flex flex-col items-center gap-1">
+                <span
+                  className="text-xl"
+                  style={{ filter: `drop-shadow(0 0 6px ${color}80)` }}
+                >
+                  {icon}
+                </span>
+                <span
+                  className="font-mono"
+                  style={{
+                    fontSize: "0.55rem",
+                    color: `${color}99`,
+                    letterSpacing: "0.05em",
+                  }}
+                >
+                  {label}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
 
         <footer
