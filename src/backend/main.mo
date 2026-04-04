@@ -6,9 +6,9 @@ import Principal "mo:core/Principal";
 import Text "mo:core/Text";
 import Time "mo:core/Time";
 import Map "mo:core/Map";
-import Migration "migration";
 
-(with migration = Migration.run)
+
+
 actor {
   // ── Legacy high score ────────────────────────────────────────────────
   stable var highScore : Nat = 0;

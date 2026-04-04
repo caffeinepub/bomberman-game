@@ -3,6 +3,7 @@ import { Input } from "@/components/ui/input";
 import { useActor } from "@/hooks/useActor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RoomInfo } from "./backend";
+import { deserializeGameState, serializeGameState } from "./game/serializer";
 import {
   addIceCandidate,
   closeConnection,
@@ -15,7 +16,6 @@ import {
 import type { WebRTCManager } from "./game/webrtcManager";
 
 import {
-  BOMB_FUSE,
   DIRS,
   ENEMY_DIR_CHANGE_INTERVAL,
   PROJECTILE_SPEED,
@@ -82,7 +82,16 @@ export default function App() {
   const [onlineGridSize, setOnlineGridSize] = useState<"S" | "M" | "L">("M");
   const [onlineRoomId, setOnlineRoomId] = useState("");
   const [onlineRooms, setOnlineRooms] = useState<RoomInfo[]>([]);
-  const [_onlineRole, setOnlineRole] = useState<"host" | "guest">("host");
+  const onlineRoleRef = useRef<"host" | "guest" | null>(null);
+  const rtcManagerRef = useRef<WebRTCManager | null>(null);
+  const isOnlineCoopRef = useRef(false);
+  const onlineRoomIdRef = useRef("");
+  const lastStatePushRef = useRef(0);
+  const latestRemoteStateRef = useRef<string | null>(null);
+  const p2InputQueueRef = useRef<
+    { code: string; pressed: boolean; bomb?: boolean }[]
+  >([]);
+  const [onlineDisconnected, setOnlineDisconnected] = useState(false);
   const [rtcManager, setRtcManager] = useState<WebRTCManager | null>(null);
   const [rtcConnected, setRtcConnected] = useState(false);
   const [onlineError, setOnlineError] = useState("");
@@ -306,6 +315,33 @@ export default function App() {
     (now: number) => {
       const gs = gsRef.current;
       if (!gs) return;
+
+      // Online co-op: guest receives state snapshot and renders it, no simulation
+      if (isOnlineCoopRef.current && onlineRoleRef.current === "guest") {
+        let renderGs = gs;
+        if (latestRemoteStateRef.current) {
+          const newGs = deserializeGameState(latestRemoteStateRef.current);
+          gsRef.current = newGs;
+          renderGs = newGs;
+          latestRemoteStateRef.current = null;
+        }
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        drawGame(ctx, renderGs, now);
+        // Sync display state from remote gs
+        setDisplayScore(renderGs.score);
+        setDisplayLevel(renderGs.level);
+        if (renderGs.status === "gameover") {
+          setGameStatus("gameover");
+          setFinalScore(renderGs.score);
+        } else if (renderGs.status === "levelcomplete") {
+          setGameStatus("levelcomplete");
+        }
+        return;
+      }
+
       if (gs.status !== "playing") return;
 
       const dt =
@@ -2049,6 +2085,31 @@ export default function App() {
       setDisplayBombType(player.bombType);
       setDisplayTimer(gs.timerMs);
 
+      // Online co-op: host drains guest input queue and pushes state to guest
+      if (isOnlineCoopRef.current && onlineRoleRef.current === "host") {
+        const inputs = p2InputQueueRef.current.splice(0);
+        for (const inp of inputs) {
+          if (inp.bomb) {
+            placeP2Bomb(gs);
+          } else if (inp.pressed) {
+            p2KeyOrderRef.current = [
+              inp.code,
+              ...p2KeyOrderRef.current.filter((k) => k !== inp.code),
+            ];
+          } else {
+            p2KeyOrderRef.current = p2KeyOrderRef.current.filter(
+              (k) => k !== inp.code,
+            );
+          }
+        }
+        const mgr = rtcManagerRef.current;
+        if (mgr?.isConnected && now - lastStatePushRef.current > 100) {
+          lastStatePushRef.current = now;
+          const stateJson = serializeGameState(gs);
+          sendData(mgr, stateJson);
+        }
+      }
+
       // Draw
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -2056,7 +2117,7 @@ export default function App() {
       if (!ctx) return;
       drawGame(ctx, gs, now);
     },
-    [onGameOver],
+    [onGameOver, placeP2Bomb],
   );
 
   // RAF loop
@@ -2076,10 +2137,20 @@ export default function App() {
       keysRef.current.add(e.key);
       // Last-key-wins: keep keyOrder with most recent key at front
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
-        keyOrderRef.current = [
-          e.key,
-          ...keyOrderRef.current.filter((k) => k !== e.key),
-        ];
+        if (isOnlineCoopRef.current && onlineRoleRef.current === "guest") {
+          // Guest: send movement input to host via DataChannel instead
+          const mgr = rtcManagerRef.current;
+          if (mgr)
+            sendData(
+              mgr,
+              JSON.stringify({ type: "input", code: e.key, pressed: true }),
+            );
+        } else {
+          keyOrderRef.current = [
+            e.key,
+            ...keyOrderRef.current.filter((k) => k !== e.key),
+          ];
+        }
       }
       if (
         [
@@ -2095,6 +2166,12 @@ export default function App() {
         e.preventDefault();
       }
       if (e.key === " " || (e.key === "Control" && e.location === 2)) {
+        // Online guest: send bomb event to host
+        if (isOnlineCoopRef.current && onlineRoleRef.current === "guest") {
+          const mgr = rtcManagerRef.current;
+          if (mgr) sendData(mgr, JSON.stringify({ type: "bomb" }));
+          return;
+        }
         const gs = gsRef.current;
         if (!gs || gs.status !== "playing" || !gs.player.alive) return;
         const { tx, ty } = gs.player;
@@ -2147,7 +2224,16 @@ export default function App() {
     const onKeyUp = (e: KeyboardEvent) => {
       keysRef.current.delete(e.key);
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
-        keyOrderRef.current = keyOrderRef.current.filter((k) => k !== e.key);
+        if (isOnlineCoopRef.current && onlineRoleRef.current === "guest") {
+          const mgr = rtcManagerRef.current;
+          if (mgr)
+            sendData(
+              mgr,
+              JSON.stringify({ type: "input", code: e.key, pressed: false }),
+            );
+        } else {
+          keyOrderRef.current = keyOrderRef.current.filter((k) => k !== e.key);
+        }
       }
       if (["KeyW", "KeyS", "KeyA", "KeyD"].includes(e.code)) {
         p2KeyOrderRef.current = p2KeyOrderRef.current.filter(
@@ -2162,6 +2248,18 @@ export default function App() {
       window.removeEventListener("keyup", onKeyUp);
     };
   }, [gameStatus, advanceLevel, placeP2Bomb]);
+
+  // ─── Online Co-op keepAlive & disconnect effects ────────────────────────
+  useEffect(() => {
+    if (screen !== "game" || !isOnlineCoopRef.current) return;
+    if (!actor) return;
+    const id = window.setInterval(() => {
+      if (onlineRoomIdRef.current) {
+        actor.keepAlive(onlineRoomIdRef.current).catch(() => {});
+      }
+    }, 10000);
+    return () => clearInterval(id);
+  }, [screen, actor]);
 
   // ─── Online Co-op handlers ───────────────────────────────────────────────
 
@@ -2184,6 +2282,11 @@ export default function App() {
       closeConnection(rtcManager);
       setRtcManager(null);
     }
+    rtcManagerRef.current = null;
+    isOnlineCoopRef.current = false;
+    onlineRoleRef.current = null;
+    onlineRoomIdRef.current = "";
+    setOnlineDisconnected(false);
     setRtcConnected(false);
     setOnlineScreen("none");
     setOnlineRoomId("");
@@ -2216,7 +2319,6 @@ export default function App() {
       );
       setOnlineRoomId(roomId);
       setOnlineRoomNameDisplay(onlineRoomName.trim());
-      setOnlineRole("host");
 
       // Create WebRTC manager as host
       const mgr = createWebRTCManager("host");
@@ -2278,7 +2380,11 @@ export default function App() {
     }
   };
 
-  const handleGuestJoin = async (roomId: string, roomName: string) => {
+  const handleGuestJoin = async (
+    roomId: string,
+    roomName: string,
+    roomGridSize?: string,
+  ) => {
     if (!actor || !onlineName.trim()) return;
     setOnlineError("");
     try {
@@ -2289,7 +2395,6 @@ export default function App() {
       }
       setOnlineRoomId(roomId);
       setOnlineRoomNameDisplay(roomName);
-      setOnlineRole("guest");
 
       // Create WebRTC manager as guest
       const mgr = createWebRTCManager("guest");
@@ -2340,12 +2445,46 @@ export default function App() {
       }, 1500);
       onlineIntervalsRef.current.push(pollInterval);
 
-      // Listen for START message from host
+      // Listen for START message from host (format: "START:SIZE" e.g. "START:M")
+      const joinedGridSize = roomGridSize ?? "M";
+
       mgr.onMessage = (data: string) => {
-        if (data === "START") {
+        if (data.startsWith("START")) {
           cleanupOnlineIntervals();
+
+          // Parse grid size from message
+          const parts = data.split(":");
+          const gs = parts[1] ?? joinedGridSize;
+          const gridSizeColsRows: Record<string, [number, number]> = {
+            S: [13, 11],
+            M: [17, 13],
+            L: [21, 15],
+          };
+          const [cols, rows] = gridSizeColsRows[gs] ?? [17, 13];
+
+          // Set up guest to receive state snapshots from host
+          rtcManagerRef.current = mgr;
+          mgr.onMessage = (stateJson: string) => {
+            try {
+              // Only accept state messages (JSON objects starting with {)
+              if (stateJson.startsWith("{")) {
+                latestRemoteStateRef.current = stateJson;
+              }
+            } catch (_) {}
+          };
+          mgr.onDisconnected = () => {
+            setOnlineDisconnected(true);
+          };
+
+          isOnlineCoopRef.current = true;
+          onlineRoleRef.current = "guest";
+          onlineRoomIdRef.current = onlineRoomId;
+
           setOnlineScreen("none");
-          // Placeholder: Online game sync coming in Steps 3 & 4
+          startGame(cols, rows, true);
+        } else if (data.startsWith("{")) {
+          // Early state push before START acknowledgment -- store it
+          latestRemoteStateRef.current = data;
         }
       };
     } catch (_) {
@@ -2357,10 +2496,52 @@ export default function App() {
     if (!actor || !onlineRoomId || !rtcManager) return;
     try {
       await actor.startGame(onlineRoomId);
-      sendData(rtcManager, "START");
+      // Encode grid size in START message so guest knows which size to use
+      sendData(rtcManager, `START:${onlineGridSize}`);
       cleanupOnlineIntervals();
+
+      // Wire up host to receive guest inputs over DataChannel
+      const mgr = rtcManager;
+      rtcManagerRef.current = mgr;
+      mgr.onMessage = (data: string) => {
+        try {
+          const msg = JSON.parse(data) as {
+            type: string;
+            code?: string;
+            pressed?: boolean;
+          };
+          if (msg.type === "input" && msg.code) {
+            p2InputQueueRef.current.push({
+              code: msg.code,
+              pressed: msg.pressed ?? false,
+            });
+          } else if (msg.type === "bomb") {
+            p2InputQueueRef.current.push({
+              code: "",
+              pressed: false,
+              bomb: true,
+            });
+          }
+        } catch (_) {}
+      };
+      mgr.onDisconnected = () => {
+        setOnlineDisconnected(true);
+      };
+
+      // Parse grid size and start game
+      const gridSizeColsRows: Record<string, [number, number]> = {
+        S: [13, 11],
+        M: [17, 13],
+        L: [21, 15],
+      };
+      const [cols, rows] = gridSizeColsRows[onlineGridSize] ?? [17, 13];
+
+      isOnlineCoopRef.current = true;
+      onlineRoleRef.current = "host";
+      onlineRoomIdRef.current = onlineRoomId;
+
       setOnlineScreen("none");
-      // Placeholder: Online game sync coming in Steps 3 & 4
+      startGame(cols, rows, true);
     } catch (_) {
       setOnlineError("Failed to start game. Please try again.");
     }
@@ -3374,7 +3555,11 @@ export default function App() {
                             data-ocid={`online.rooms.item.${idx + 1}`}
                             onClick={() => {
                               if (!isFull)
-                                handleGuestJoin(room.id, room.roomName);
+                                handleGuestJoin(
+                                  room.id,
+                                  room.roomName,
+                                  room.gridSize,
+                                );
                             }}
                             disabled={isFull}
                             type="button"
@@ -4113,6 +4298,43 @@ export default function App() {
                 ◄ MENU
               </Button>
             </div>
+          </div>
+        )}
+
+        {onlineDisconnected && (
+          <div
+            data-ocid="online.disconnected.modal"
+            className="absolute inset-0 flex flex-col items-center justify-center gap-6 z-50"
+            style={{ background: "rgba(0,0,0,0.93)" }}
+          >
+            <div className="text-5xl">📡</div>
+            <p
+              className="font-display text-3xl font-black tracking-widest uppercase"
+              style={{ color: "#ff6080", textShadow: "0 0 20px #ff6080" }}
+            >
+              DISCONNECTED
+            </p>
+            <p className="font-mono text-sm" style={{ color: "#6a3a4a" }}>
+              Opponent has disconnected
+            </p>
+            <Button
+              data-ocid="online.disconnected.return.button"
+              onClick={() => {
+                setOnlineDisconnected(false);
+                isOnlineCoopRef.current = false;
+                onlineRoleRef.current = null;
+                rtcManagerRef.current = null;
+                setScreen("picker");
+              }}
+              className="font-mono font-bold tracking-widest uppercase px-10 py-3 border"
+              style={{
+                background: "transparent",
+                borderColor: "#ff6080",
+                color: "#ff6080",
+              }}
+            >
+              ◄ RETURN TO MENU
+            </Button>
           </div>
         )}
 

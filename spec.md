@@ -1,41 +1,81 @@
-# Bomberman Game - WebRTC Online Co-op (Steps 1 & 2)
+# Bomberman Game - Online Co-op Step 3 & 4
 
 ## Current State
-- Local co-op works on same keyboard (P1: arrows+RCtrl, P2: WASD+Shift)
-- Backend has room relay methods: createRoom, listRooms, joinRoom, leaveRoom, keepAlive, pushGameState, getGameState, submitP2Input, getAndClearP2Inputs
-- No WebRTC signaling methods exist yet
-- No online multiplayer lobby UI exists
+
+Steps 1 & 2 are complete:
+- Backend (Motoko) has full signaling: createRoom, joinRoom, listRooms, pushOffer/Answer, pushHostIce/GuestIce, startGame, isGameStarted, pushGameState, getGameState, submitP2Input, getAndClearP2Inputs.
+- Frontend has full lobby UI: name entry, host setup (room name + grid size), host waiting screen, joiner room list, joiner waiting screen.
+- WebRTC handshake completes (offer/answer/ICE via ICP canister) and the DataChannel is established.
+- When host presses Start: sends `"START"` over DataChannel, calls `actor.startGame(roomId)`.
+- When guest receives `"START"`: lobby clears. But neither host nor guest actually starts the game loop -- both placeholders have comment `// Placeholder: Online game sync coming in Steps 3 & 4`.
+
+Key structural gaps:
+- `rtcManager` is React state -- not accessible inside `tick`. Needs a `rtcManagerRef`.
+- `_onlineRole` (prefixed with `_`) is stored but never read back into gameplay. Needs `onlineRoleRef`.
+- `tick()` has no online co-op branching -- doesn't know whether to run the full simulation (host) or apply received state (guest).
+- `GameState` has no JSON serialization/deserialization.
+- Guest never calls `startGame()` after receiving START signal.
+- Grid size from room is not parsed for guest.
+- `isOnlineCoop`, `isOnlineHost`, `isOnlineGuest` flags don't exist yet.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Backend signaling methods: pushOffer, pushAnswer, pushHostIce, pushGuestIce, getOffer, getAnswer, getHostIce, getGuestIce
-- Backend room metadata: roomName, hostName, gridSize fields on RoomRecord
-- Updated createRoom signature: createRoom(roomName, hostName, gridSize) -> Text
-- Updated listRooms to return roomName, hostName, gridSize, playerCount
-- Online Co-op button on main menu
-- Name entry screen (before host/join selection)
-- Host flow: enter room name + pick grid size -> create room -> waiting screen -> Start button activates when P2 DataChannel is open
-- Joiner flow: available rooms list with refresh -> join -> WebRTC handshake -> waiting for host screen
-- WebRTC DataChannel establishment (STUN: stun.l.google.com:19302)
-- webrtcManager.ts utility module for WebRTC connection logic
-- OnlineMultiplayerScreen component in App.tsx
+- **`rtcManagerRef`** (useRef) alongside `rtcManager` state -- gives `tick` access to the DataChannel without stale closure issues
+- **`onlineRoleRef`** (useRef) that mirrors `_onlineRole` -- gives `tick` access to host/guest identity
+- **`isOnlineCoopRef`** (useRef boolean) -- tells `tick` whether we're in online co-op mode
+- **`onlineRoomIdRef`** (useRef string) -- used inside tick for keepAlive and input relay
+- **`gameStateSerializer`**: function to serialize `GameState` to JSON, handling non-serializable types (Set, Map) by converting to arrays/objects. Located in `src/frontend/src/game/types.ts` or a new `src/frontend/src/game/serializer.ts`.
+- **`gameStateDeserializer`**: reverse of above -- JSON string to `GameState`, reconstructing Set/Map from arrays.
+- **Host game loop additions inside `tick`**:
+  - After computing the new frame, if `isOnlineCoopRef.current && onlineRoleRef.current === 'host'` AND DataChannel is open: serialize `GameState` and `sendData` ~every 100ms (use a `lastStatePushRef` timestamp to throttle).
+  - Read `getAndClearP2Inputs` from canister periodically (every 150ms via `setInterval`, not inside RAF loop) -- parse each input JSON and apply to `p2KeyOrderRef` and trigger `placeP2BombOnline()`.
+  - Alternatively, route P2 inputs entirely via WebRTC DataChannel for lower latency: guest sends `{type:"input", key:"...", bomb:true/false}` messages; host applies them inside `tick`.
+- **Guest game loop additions inside `tick`**:
+  - If `isOnlineCoopRef.current && onlineRoleRef.current === 'guest'`: skip ALL game simulation (movement, enemies, bombs, physics). Instead, apply received state snapshots from the DataChannel.
+  - Guest receives state JSON via `rtcManager.onMessage`, stores it in a `latestRemoteState` ref, and `tick` applies it each frame (or on receipt).
+  - Guest sends local keypresses to host over DataChannel: `{type:"input", code:"ArrowUp", pressed:true}` and bomb `{type:"bomb"}`.
+- **Guest `startGame` call**: when guest receives `"START"` message, parse grid size from `onlineRoomNameDisplay`/room record, call `startGame(cols, rows, true)` with `isOnlineGuest = true` flag, then set screen to `"game"`.
+- **Host `startGame` call**: when host presses Start button, after sending `"START"`, call `startGame(cols, rows, true)` with `isOnlineHost = true` flag, then set screen to `"game"`.
+- **Input relay via DataChannel (preferred over canister relay for speed)**:
+  - Guest keydown/keyup events: send `{type:"input",code:"...",pressed:boolean}` to host via DataChannel.
+  - Guest bomb button: send `{type:"bomb"}` to host.
+  - Host receives these in `onMessage`, updates a `p2InputQueueRef`, which `tick` drains each frame.
+- **State snapshot apply on guest**: `onMessage` on guest side stores the latest `GameState` JSON in `latestRemoteStateRef`. At the top of `tick` (guest path), deserialize and set `gsRef.current` to the snapshot before drawing.
+- **keepAlive**: both host and guest call `actor.keepAlive(roomId)` every 10s during active game to keep room alive on canister.
+- **Disconnection handling**: if DataChannel closes during game, show a "Disconnected" overlay and return to main menu.
 
 ### Modify
-- backend.d.ts: add new signaling method signatures, update createRoom/listRooms signatures
-- backend.did.js: add new IDL entries for signaling methods
-- App.tsx: add Online Co-op screen state, wire OnlineMultiplayerScreen component
-- Main menu: add Online Co-op button alongside Local Co-op
+- **`handleHostStart`**: After `sendData(rtcManager, "START")`, call `startGame(cols, rows, true)` with host flags set, set `screen` to `"game"`.
+- **`handleGuestJoin` onMessage handler**: When receiving `"START"`, parse grid size, call `startGame(cols, rows, true)` with guest flags, set `screen` to `"game"`.
+- **`_onlineRole`**: Remove underscore prefix, add mirroring ref `onlineRoleRef`.
+- **`rtcManager` state**: Add parallel `rtcManagerRef` that is kept in sync whenever `rtcManager` is set.
+- **`tick`**: Add online co-op branching at the top:
+  ```
+  if (isOnlineCoopRef.current && onlineRoleRef.current === 'guest') {
+    // Apply latest remote state snapshot, then draw, then send local inputs
+    // Skip all simulation
+  }
+  // Otherwise: normal host/singleplayer simulation path
+  ```
+- **P2 input on local co-op**: unchanged -- keyboard Shift for bomb, WASD for movement.
+- **P2 input on online co-op (guest side)**: Guest arrow keys + Right Ctrl send DataChannel messages instead of directly manipulating refs (since guest's `tick` skips simulation).
 
 ### Remove
-- Nothing removed from existing local co-op or single player
+- The two `// Placeholder: Online game sync coming in Steps 3 & 4` comment blocks (replace with real logic).
+- `_onlineRole` prefix (rename to `onlineRole` and add ref).
 
 ## Implementation Plan
-1. Extend Motoko backend with signaling fields (offer, answer, hostIceCandidates, guestIceCandidates arrays) on RoomRecord and add push/get methods
-2. Update createRoom to accept roomName, hostName, gridSize parameters
-3. Update listRooms RoomInfo to include roomName, hostName, gridSize
-4. Update backend.d.ts and backend.did.js to match new backend
-5. Create src/frontend/src/game/webrtcManager.ts with WebRTC connection logic (createOffer, handleAnswer, addIceCandidate, DataChannel open/send/receive)
-6. Add OnlineMultiplayerScreen to App.tsx covering: name entry, host vs join choice, host setup form, host waiting room, joiner room list, joiner waiting room
-7. Wire Online Co-op button on main menu
-8. Steps 3 & 4 (game state sync + input relay over DataChannel) are NOT in this build -- game launches for host only as placeholder after DataChannel opens
+
+1. Add `serializer.ts` with `serializeGameState(gs: GameState): string` and `deserializeGameState(json: string): GameState` -- handle Set/Map/non-serializable fields.
+2. Add refs: `rtcManagerRef`, `onlineRoleRef`, `isOnlineCoopRef`, `onlineRoomIdRef`, `lastStatePushRef`, `latestRemoteStateRef`, `p2InputQueueRef`.
+3. Whenever `setRtcManager(mgr)` is called, also set `rtcManagerRef.current = mgr`.
+4. Whenever `setOnlineRole(role)` is called, also set `onlineRoleRef.current = role`.
+5. Modify `handleHostStart`: call `startGame()` for host, set `isOnlineCoopRef.current = true`, `onlineRoleRef.current = 'host'`, set up `rtcManager.onMessage` for receiving guest inputs from DataChannel.
+6. Modify `handleGuestJoin` onMessage: when `data === 'START'`, parse grid size from room, call `startGame()` for guest, set `isOnlineCoopRef.current = true`, `onlineRoleRef.current = 'guest'`, set up sending inputs via DataChannel.
+7. Modify `tick` to branch at top for guest: apply `latestRemoteStateRef.current` snapshot, draw, skip simulation. For host: add state push throttle after simulation.
+8. Add input sending from guest's keydown handler to DataChannel (instead of manipulating refs directly when in online guest mode).
+9. Add host `onMessage` handler to drain `p2InputQueueRef` -- feed into `p2KeyOrderRef` and `placeP2Bomb`.
+10. Add keepAlive interval (every 10s) during active game for both host and guest.
+11. Add disconnection overlay if DataChannel closes mid-game.
+12. Grid size mapping: `"S" -> 11x11`, `"M" -> 15x15`, `"L" -> 19x19`. Custom not available for online (default to M if encountered).
