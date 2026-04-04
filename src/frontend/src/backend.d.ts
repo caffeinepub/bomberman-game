@@ -7,23 +7,33 @@ export interface None {
     __kind__: "None";
 }
 export type Option<T> = Some<T> | None;
-
 export interface RoomInfo {
     id: string;
-    hostId: Principal;
+    hostName: string;
+    gridSize: string;
     playerCount: bigint;
+    roomName: string;
 }
-
 export interface backendInterface {
+    createRoom(roomName: string, hostName: string, gridSize: string): Promise<string>;
+    getAndClearP2Inputs(roomId: string): Promise<Array<string>>;
+    getAnswer(roomId: string): Promise<string | null>;
+    getGameState(roomId: string): Promise<string | null>;
+    getGuestIce(roomId: string): Promise<Array<string>>;
     getHighScore(): Promise<bigint>;
-    submitScore(score: bigint): Promise<bigint>;
-    createRoom(): Promise<string>;
-    listRooms(): Promise<RoomInfo[]>;
+    getHostIce(roomId: string): Promise<Array<string>>;
+    getOffer(roomId: string): Promise<string | null>;
+    isGameStarted(roomId: string): Promise<boolean>;
     joinRoom(roomId: string): Promise<boolean>;
-    leaveRoom(roomId: string): Promise<void>;
     keepAlive(roomId: string): Promise<void>;
+    leaveRoom(roomId: string): Promise<void>;
+    listRooms(): Promise<Array<RoomInfo>>;
+    pushAnswer(roomId: string, answer: string): Promise<void>;
     pushGameState(roomId: string, stateJson: string): Promise<void>;
-    getGameState(roomId: string): Promise<[] | [string]>;
+    pushGuestIce(roomId: string, candidate: string): Promise<void>;
+    pushHostIce(roomId: string, candidate: string): Promise<void>;
+    pushOffer(roomId: string, offer: string): Promise<void>;
+    startGame(roomId: string): Promise<void>;
     submitP2Input(roomId: string, inputJson: string): Promise<void>;
-    getAndClearP2Inputs(roomId: string): Promise<string[]>;
+    submitScore(score: bigint): Promise<bigint>;
 }

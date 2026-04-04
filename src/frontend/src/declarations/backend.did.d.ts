@@ -11,23 +11,34 @@ import type { IDL } from '@icp-sdk/core/candid';
 import type { Principal } from '@icp-sdk/core/principal';
 
 export interface RoomInfo {
-  'id': string;
-  'hostId': Principal;
-  'playerCount': bigint;
+  'id' : string,
+  'hostName' : string,
+  'gridSize' : string,
+  'playerCount' : bigint,
+  'roomName' : string,
 }
-
 export interface _SERVICE {
-  'getHighScore' : ActorMethod<[], bigint>;
-  'submitScore' : ActorMethod<[bigint], bigint>;
-  'createRoom' : ActorMethod<[], string>;
-  'listRooms' : ActorMethod<[], RoomInfo[]>;
-  'joinRoom' : ActorMethod<[string], boolean>;
-  'leaveRoom' : ActorMethod<[string], undefined>;
-  'keepAlive' : ActorMethod<[string], undefined>;
-  'pushGameState' : ActorMethod<[string, string], undefined>;
-  'getGameState' : ActorMethod<[string], [] | [string]>;
-  'submitP2Input' : ActorMethod<[string, string], undefined>;
-  'getAndClearP2Inputs' : ActorMethod<[string], string[]>;
+  'createRoom' : ActorMethod<[string, string, string], string>,
+  'getAndClearP2Inputs' : ActorMethod<[string], Array<string>>,
+  'getAnswer' : ActorMethod<[string], [] | [string]>,
+  'getGameState' : ActorMethod<[string], [] | [string]>,
+  'getGuestIce' : ActorMethod<[string], Array<string>>,
+  'getHighScore' : ActorMethod<[], bigint>,
+  'getHostIce' : ActorMethod<[string], Array<string>>,
+  'getOffer' : ActorMethod<[string], [] | [string]>,
+  'isGameStarted' : ActorMethod<[string], boolean>,
+  'joinRoom' : ActorMethod<[string], boolean>,
+  'keepAlive' : ActorMethod<[string], undefined>,
+  'leaveRoom' : ActorMethod<[string], undefined>,
+  'listRooms' : ActorMethod<[], Array<RoomInfo>>,
+  'pushAnswer' : ActorMethod<[string, string], undefined>,
+  'pushGameState' : ActorMethod<[string, string], undefined>,
+  'pushGuestIce' : ActorMethod<[string, string], undefined>,
+  'pushHostIce' : ActorMethod<[string, string], undefined>,
+  'pushOffer' : ActorMethod<[string, string], undefined>,
+  'startGame' : ActorMethod<[string], undefined>,
+  'submitP2Input' : ActorMethod<[string, string], undefined>,
+  'submitScore' : ActorMethod<[bigint], bigint>,
 }
 export declare const idlService: IDL.ServiceClass;
 export declare const idlInitArgs: IDL.Type[];

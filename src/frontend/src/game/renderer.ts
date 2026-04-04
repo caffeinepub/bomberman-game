@@ -586,7 +586,7 @@ const POWERUP_COLORS: Record<PowerUpType, string> = {
   Curse: "#9400d3",
   FuseUp: "#ff6600",
   FuseDown: "#4488ff",
-  BombType: "#ffffff",
+  BombType: "#ff88cc",
   SpeedDown: "#ff4488",
 };
 const POWERUP_ICONS: Record<PowerUpType, string> = {
@@ -598,7 +598,7 @@ const POWERUP_ICONS: Record<PowerUpType, string> = {
   Curse: "☠",
   FuseUp: "⏩",
   FuseDown: "⏪",
-  BombType: "💣",
+  BombType: "🎁",
   SpeedDown: "🐢",
 };
 
@@ -635,30 +635,77 @@ function drawPowerUp(ctx: CanvasRenderingContext2D, pu: PowerUp, now: number) {
     ctx.textBaseline = "middle";
     ctx.fillText("☠", cx, cy + bob);
   } else if (pu.type === "BombType") {
-    const colors: string[] = [
-      "#ff2200",
-      "#4499ff",
-      "#ffffff",
-      "#ffdd00",
-      "#ff44ff",
-      "#ffff44",
-    ];
-    const labels: string[] = ["L", "F", "N", "K", "P", "S"];
-    const count = 6;
-    const spacing = r * 0.38;
-    for (let i = 0; i < count; i++) {
-      const ox = (i - 2.5) * spacing;
-      const cr = r * 0.22;
-      ctx.fillStyle = colors[i];
-      ctx.beginPath();
-      ctx.arc(cx + ox, cy + bob, cr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "rgba(0,0,0,0.85)";
-      ctx.font = `bold ${Math.floor(cr * 1.3)}px sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(labels[i], cx + ox, cy + bob);
-    }
+    // Draw a gift box icon (consistent in single-player and co-op)
+    const bx = cx - r * 0.85;
+    const by = cy + bob - r * 0.55;
+    const bw = r * 1.7;
+    const bh = r * 1.35;
+    const lidH = bh * 0.32;
+    // Rainbow shimmer glow
+    const shimmer = (Math.sin(now / 400 + pu.id) + 1) / 2;
+    const glowColor = `rgba(${Math.floor(180 + 75 * shimmer)},${Math.floor(100 + 100 * shimmer)},255,0.45)`;
+    const glow2 = ctx.createRadialGradient(
+      cx,
+      cy + bob,
+      0,
+      cx,
+      cy + bob,
+      r * 2.2,
+    );
+    glow2.addColorStop(0, glowColor);
+    glow2.addColorStop(1, "transparent");
+    ctx.fillStyle = glow2;
+    ctx.beginPath();
+    ctx.arc(cx, cy + bob, r * 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    // Box body
+    ctx.fillStyle = "#cc2255";
+    ctx.fillRect(bx, by + lidH, bw, bh - lidH);
+    // Box lid
+    ctx.fillStyle = "#ee3366";
+    ctx.fillRect(bx - r * 0.08, by, bw + r * 0.16, lidH);
+    // Vertical ribbon on body
+    ctx.fillStyle = "#ffdd44";
+    ctx.fillRect(cx - r * 0.12, by + lidH, r * 0.24, bh - lidH);
+    // Horizontal ribbon on body
+    ctx.fillStyle = "#ffdd44";
+    ctx.fillRect(bx, by + lidH + (bh - lidH) * 0.45, bw, r * 0.22);
+    // Ribbon stripe on lid
+    ctx.fillStyle = "#ffcc00";
+    ctx.fillRect(cx - r * 0.12, by, r * 0.24, lidH);
+    // Bow - left loop
+    ctx.fillStyle = "#ffee55";
+    ctx.beginPath();
+    ctx.ellipse(
+      cx - r * 0.38,
+      by - r * 0.18,
+      r * 0.32,
+      r * 0.2,
+      -0.5,
+      0,
+      Math.PI * 2,
+    );
+    ctx.fill();
+    // Bow - right loop
+    ctx.beginPath();
+    ctx.ellipse(
+      cx + r * 0.38,
+      by - r * 0.18,
+      r * 0.32,
+      r * 0.2,
+      0.5,
+      0,
+      Math.PI * 2,
+    );
+    ctx.fill();
+    // Bow center knot
+    ctx.fillStyle = "#ffcc00";
+    ctx.beginPath();
+    ctx.arc(cx, by - r * 0.04, r * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+    // Shine on lid
+    ctx.fillStyle = "rgba(255,255,255,0.25)";
+    ctx.fillRect(bx + r * 0.15, by + r * 0.05, bw * 0.4, lidH * 0.45);
   } else {
     ctx.font = `${TILE * 0.32}px serif`;
     ctx.textAlign = "center";

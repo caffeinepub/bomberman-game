@@ -8,46 +8,71 @@
 
 import { IDL } from '@icp-sdk/core/candid';
 
-const RoomInfo = IDL.Record({
-  'id': IDL.Text,
-  'hostId': IDL.Principal,
-  'playerCount': IDL.Nat,
+export const RoomInfo = IDL.Record({
+  'id' : IDL.Text,
+  'hostName' : IDL.Text,
+  'gridSize' : IDL.Text,
+  'playerCount' : IDL.Nat,
+  'roomName' : IDL.Text,
 });
 
 export const idlService = IDL.Service({
-  'getHighScore' : IDL.Func([], [IDL.Nat], ['query']),
-  'submitScore' : IDL.Func([IDL.Nat], [IDL.Nat], []),
-  'createRoom' : IDL.Func([], [IDL.Text], []),
-  'listRooms' : IDL.Func([], [IDL.Vec(RoomInfo)], ['query']),
-  'joinRoom' : IDL.Func([IDL.Text], [IDL.Bool], []),
-  'leaveRoom' : IDL.Func([IDL.Text], [], []),
-  'keepAlive' : IDL.Func([IDL.Text], [], []),
-  'pushGameState' : IDL.Func([IDL.Text, IDL.Text], [], []),
-  'getGameState' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
-  'submitP2Input' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'createRoom' : IDL.Func([IDL.Text, IDL.Text, IDL.Text], [IDL.Text], []),
   'getAndClearP2Inputs' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], []),
+  'getAnswer' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+  'getGameState' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+  'getGuestIce' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], ['query']),
+  'getHighScore' : IDL.Func([], [IDL.Nat], ['query']),
+  'getHostIce' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], ['query']),
+  'getOffer' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+  'isGameStarted' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
+  'joinRoom' : IDL.Func([IDL.Text], [IDL.Bool], []),
+  'keepAlive' : IDL.Func([IDL.Text], [], []),
+  'leaveRoom' : IDL.Func([IDL.Text], [], []),
+  'listRooms' : IDL.Func([], [IDL.Vec(RoomInfo)], ['query']),
+  'pushAnswer' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'pushGameState' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'pushGuestIce' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'pushHostIce' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'pushOffer' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'startGame' : IDL.Func([IDL.Text], [], []),
+  'submitP2Input' : IDL.Func([IDL.Text, IDL.Text], [], []),
+  'submitScore' : IDL.Func([IDL.Nat], [IDL.Nat], []),
 });
 
 export const idlInitArgs = [];
 
 export const idlFactory = ({ IDL }) => {
   const RoomInfo = IDL.Record({
-    'id': IDL.Text,
-    'hostId': IDL.Principal,
-    'playerCount': IDL.Nat,
+    'id' : IDL.Text,
+    'hostName' : IDL.Text,
+    'gridSize' : IDL.Text,
+    'playerCount' : IDL.Nat,
+    'roomName' : IDL.Text,
   });
+  
   return IDL.Service({
-    'getHighScore' : IDL.Func([], [IDL.Nat], ['query']),
-    'submitScore' : IDL.Func([IDL.Nat], [IDL.Nat], []),
-    'createRoom' : IDL.Func([], [IDL.Text], []),
-    'listRooms' : IDL.Func([], [IDL.Vec(RoomInfo)], ['query']),
-    'joinRoom' : IDL.Func([IDL.Text], [IDL.Bool], []),
-    'leaveRoom' : IDL.Func([IDL.Text], [], []),
-    'keepAlive' : IDL.Func([IDL.Text], [], []),
-    'pushGameState' : IDL.Func([IDL.Text, IDL.Text], [], []),
-    'getGameState' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
-    'submitP2Input' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'createRoom' : IDL.Func([IDL.Text, IDL.Text, IDL.Text], [IDL.Text], []),
     'getAndClearP2Inputs' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], []),
+    'getAnswer' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+    'getGameState' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+    'getGuestIce' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], ['query']),
+    'getHighScore' : IDL.Func([], [IDL.Nat], ['query']),
+    'getHostIce' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], ['query']),
+    'getOffer' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+    'isGameStarted' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
+    'joinRoom' : IDL.Func([IDL.Text], [IDL.Bool], []),
+    'keepAlive' : IDL.Func([IDL.Text], [], []),
+    'leaveRoom' : IDL.Func([IDL.Text], [], []),
+    'listRooms' : IDL.Func([], [IDL.Vec(RoomInfo)], ['query']),
+    'pushAnswer' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'pushGameState' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'pushGuestIce' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'pushHostIce' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'pushOffer' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'startGame' : IDL.Func([IDL.Text], [], []),
+    'submitP2Input' : IDL.Func([IDL.Text, IDL.Text], [], []),
+    'submitScore' : IDL.Func([IDL.Nat], [IDL.Nat], []),
   });
 };
 

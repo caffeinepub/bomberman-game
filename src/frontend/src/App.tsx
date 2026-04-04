@@ -2,6 +2,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useActor } from "@/hooks/useActor";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { RoomInfo } from "./backend";
+import {
+  addIceCandidate,
+  closeConnection,
+  createWebRTCManager,
+  guestReceiveOffer,
+  hostCreateOffer,
+  hostReceiveAnswer,
+  sendData,
+} from "./game/webrtcManager";
+import type { WebRTCManager } from "./game/webrtcManager";
 
 import {
   BOMB_FUSE,
@@ -56,6 +67,28 @@ export default function App() {
   const [coOpCustomCols, setCoOpCustomCols] = useState("17");
   const [coOpCustomRows, setCoOpCustomRows] = useState("13");
   const [showCoOpCustom, setShowCoOpCustom] = useState(false);
+  // ─── Online Co-op state ──────────────────────────────────────────────────
+  const [onlineScreen, setOnlineScreen] = useState<
+    | "none"
+    | "name"
+    | "choice"
+    | "hostSetup"
+    | "hostWaiting"
+    | "joinList"
+    | "joinWaiting"
+  >("none");
+  const [onlineName, setOnlineName] = useState("");
+  const [onlineRoomName, setOnlineRoomName] = useState("");
+  const [onlineGridSize, setOnlineGridSize] = useState<"S" | "M" | "L">("M");
+  const [onlineRoomId, setOnlineRoomId] = useState("");
+  const [onlineRooms, setOnlineRooms] = useState<RoomInfo[]>([]);
+  const [_onlineRole, setOnlineRole] = useState<"host" | "guest">("host");
+  const [rtcManager, setRtcManager] = useState<WebRTCManager | null>(null);
+  const [rtcConnected, setRtcConnected] = useState(false);
+  const [onlineError, setOnlineError] = useState("");
+  const [onlinePlayerCount, setOnlinePlayerCount] = useState(1);
+  const [onlineRoomNameDisplay, setOnlineRoomNameDisplay] = useState("");
+  const onlineIntervalsRef = useRef<number[]>([]);
   const [displayScore, setDisplayScore] = useState(0);
   const [displayLives, setDisplayLives] = useState(3);
   const [displayLevel, setDisplayLevel] = useState(1);
@@ -2130,6 +2163,209 @@ export default function App() {
     };
   }, [gameStatus, advanceLevel, placeP2Bomb]);
 
+  // ─── Online Co-op handlers ───────────────────────────────────────────────
+
+  const cleanupOnlineIntervals = () => {
+    for (const id of onlineIntervalsRef.current) {
+      clearInterval(id);
+    }
+    onlineIntervalsRef.current = [];
+  };
+
+  const cleanupOnline = async (roomId?: string) => {
+    cleanupOnlineIntervals();
+    const rid = roomId ?? onlineRoomId;
+    if (rid && actor) {
+      try {
+        await actor.leaveRoom(rid);
+      } catch (_) {}
+    }
+    if (rtcManager) {
+      closeConnection(rtcManager);
+      setRtcManager(null);
+    }
+    setRtcConnected(false);
+    setOnlineScreen("none");
+    setOnlineRoomId("");
+    setOnlineRoomName("");
+    setOnlineRoomNameDisplay("");
+    setOnlineError("");
+    setOnlinePlayerCount(1);
+  };
+
+  const loadOnlineRooms = async () => {
+    if (!actor) return;
+    setOnlineError("");
+    try {
+      const rooms = await actor.listRooms();
+      setOnlineRooms(rooms);
+    } catch (_) {
+      setOnlineError("Failed to load rooms. Please try again.");
+    }
+  };
+
+  const handleHostCreate = async () => {
+    if (!actor || !onlineRoomName.trim() || !onlineName.trim()) return;
+    setOnlineError("");
+    try {
+      const gridSizeMap = { S: "13x11", M: "17x13", L: "21x15" };
+      const roomId = await actor.createRoom(
+        onlineRoomName.trim(),
+        onlineName.trim(),
+        gridSizeMap[onlineGridSize],
+      );
+      setOnlineRoomId(roomId);
+      setOnlineRoomNameDisplay(onlineRoomName.trim());
+      setOnlineRole("host");
+
+      // Create WebRTC manager as host
+      const mgr = createWebRTCManager("host");
+      mgr.onConnected = () => setRtcConnected(true);
+      mgr.onDisconnected = () => setRtcConnected(false);
+
+      // Collect and push ICE candidates to backend
+      mgr.pc.onicecandidate = async (e) => {
+        if (e.candidate) {
+          try {
+            await actor.pushHostIce(roomId, JSON.stringify(e.candidate));
+          } catch (_) {}
+        }
+      };
+
+      // Create offer and push to backend
+      const offerJson = await hostCreateOffer(mgr);
+      await actor.pushOffer(roomId, offerJson);
+
+      setRtcManager(mgr);
+      setOnlineScreen("hostWaiting");
+      setOnlinePlayerCount(1);
+
+      // Poll for answer and guest ICE candidates
+      const pollInterval = window.setInterval(async () => {
+        try {
+          // Keep room alive
+          await actor.keepAlive(roomId);
+
+          // Check for answer
+          if (!mgr.isConnected) {
+            const answer = await actor.getAnswer(roomId);
+            if (answer) {
+              try {
+                await hostReceiveAnswer(mgr, answer);
+              } catch (_) {}
+            }
+          }
+
+          // Always drain guest ICE candidates
+          const iceCandidates = await actor.getGuestIce(roomId);
+          for (const c of iceCandidates) {
+            try {
+              await addIceCandidate(mgr, c);
+            } catch (_) {}
+          }
+
+          // Update player count
+          const started = await actor.isGameStarted(roomId);
+          if (started) setOnlinePlayerCount(2);
+          const rooms = await actor.listRooms();
+          const thisRoom = rooms.find((r) => r.id === roomId);
+          if (thisRoom) setOnlinePlayerCount(Number(thisRoom.playerCount));
+        } catch (_) {}
+      }, 1500);
+      onlineIntervalsRef.current.push(pollInterval);
+    } catch (_e) {
+      setOnlineError("Failed to create room. Please try again.");
+    }
+  };
+
+  const handleGuestJoin = async (roomId: string, roomName: string) => {
+    if (!actor || !onlineName.trim()) return;
+    setOnlineError("");
+    try {
+      const joined = await actor.joinRoom(roomId);
+      if (!joined) {
+        setOnlineError("Room is full or no longer available.");
+        return;
+      }
+      setOnlineRoomId(roomId);
+      setOnlineRoomNameDisplay(roomName);
+      setOnlineRole("guest");
+
+      // Create WebRTC manager as guest
+      const mgr = createWebRTCManager("guest");
+      mgr.onConnected = () => setRtcConnected(true);
+      mgr.onDisconnected = () => setRtcConnected(false);
+
+      // Collect and push ICE candidates to backend
+      mgr.pc.onicecandidate = async (e) => {
+        if (e.candidate) {
+          try {
+            await actor.pushGuestIce(roomId, JSON.stringify(e.candidate));
+          } catch (_) {}
+        }
+      };
+
+      setRtcManager(mgr);
+      setOnlineScreen("joinWaiting");
+
+      // Poll for offer, then answer, then host ICE + game start
+      const pollInterval = window.setInterval(async () => {
+        try {
+          // Keep room alive
+          await actor.keepAlive(roomId);
+
+          // If we haven't set remote description yet, poll for offer
+          if (!mgr.dc && mgr.pc.signalingState === "stable") {
+            const offer = await actor.getOffer(roomId);
+            if (offer) {
+              const answerJson = await guestReceiveOffer(mgr, offer);
+              await actor.pushAnswer(roomId, answerJson);
+            }
+          }
+
+          // Always drain host ICE candidates
+          const iceCandidates = await actor.getHostIce(roomId);
+          for (const c of iceCandidates) {
+            try {
+              await addIceCandidate(mgr, c);
+            } catch (_) {}
+          }
+
+          // Check if game started
+          const started = await actor.isGameStarted(roomId);
+          if (started || mgr.isConnected) {
+            // Also listen for START message via DataChannel
+          }
+        } catch (_) {}
+      }, 1500);
+      onlineIntervalsRef.current.push(pollInterval);
+
+      // Listen for START message from host
+      mgr.onMessage = (data: string) => {
+        if (data === "START") {
+          cleanupOnlineIntervals();
+          setOnlineScreen("none");
+          // Placeholder: Online game sync coming in Steps 3 & 4
+        }
+      };
+    } catch (_) {
+      setOnlineError("Failed to join room. Please try again.");
+    }
+  };
+
+  const handleHostStart = async () => {
+    if (!actor || !onlineRoomId || !rtcManager) return;
+    try {
+      await actor.startGame(onlineRoomId);
+      sendData(rtcManager, "START");
+      cleanupOnlineIntervals();
+      setOnlineScreen("none");
+      // Placeholder: Online game sync coming in Steps 3 & 4
+    } catch (_) {
+      setOnlineError("Failed to start game. Please try again.");
+    }
+  };
+
   if (screen === "picker") {
     const handleStart = () => {
       let c = Number.parseInt(customCols, 10);
@@ -2323,6 +2559,27 @@ export default function App() {
               style={{ color: "#2a4a6a" }}
             >
               P1: Arrows + R.Ctrl &nbsp;|&nbsp; P2: WASD + Shift
+            </p>
+          </div>
+
+          <div className="mt-2">
+            <Button
+              data-ocid="picker.onlinecoop.button"
+              onClick={() => setOnlineScreen("name")}
+              className="font-mono font-bold tracking-widest uppercase w-full py-3 border"
+              style={{
+                background: "rgba(160,80,255,0.1)",
+                borderColor: "#a050ff",
+                color: "#c080ff",
+              }}
+            >
+              🌐 ONLINE CO-OP
+            </Button>
+            <p
+              className="font-mono text-xs text-center mt-2"
+              style={{ color: "#4a2a6a" }}
+            >
+              Play with a friend online via WebRTC
             </p>
           </div>
 
@@ -2701,6 +2958,587 @@ export default function App() {
             Built with ♥ using caffeine.ai
           </a>
         </footer>
+
+        {/* ── Online Co-op Overlay ─────────────────────────────────────────── */}
+        {onlineScreen !== "none" && (
+          <div
+            data-ocid="online.modal"
+            className="fixed inset-0 z-50 flex items-center justify-center"
+            style={{ background: "rgba(0,0,0,0.88)" }}
+          >
+            <div
+              className="flex flex-col gap-5 p-7 rounded-sm relative"
+              style={{
+                background: "linear-gradient(135deg, #0a0515 0%, #120820 100%)",
+                border: "1px solid rgba(160,80,255,0.4)",
+                boxShadow:
+                  "0 0 60px rgba(160,80,255,0.18), 0 0 0 1px rgba(160,80,255,0.08)",
+                minWidth: 320,
+                maxWidth: 420,
+                width: "90vw",
+              }}
+            >
+              {/* ── Name Entry ─────────────────────────────────────────────── */}
+              {onlineScreen === "name" && (
+                <>
+                  <div className="text-center">
+                    <div className="text-3xl mb-2">🌐</div>
+                    <p
+                      className="font-mono font-bold tracking-widest uppercase"
+                      style={{ color: "#c080ff", fontSize: "1rem" }}
+                    >
+                      Online Co-op
+                    </p>
+                    <p
+                      className="font-mono text-xs mt-1"
+                      style={{ color: "#6040a0" }}
+                    >
+                      Enter your display name
+                    </p>
+                  </div>
+                  <Input
+                    data-ocid="online.name.input"
+                    value={onlineName}
+                    onChange={(e) => setOnlineName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && onlineName.trim())
+                        setOnlineScreen("choice");
+                    }}
+                    placeholder="Your name..."
+                    maxLength={20}
+                    autoFocus
+                    className="font-mono text-center text-sm"
+                    style={{
+                      background: "rgba(160,80,255,0.08)",
+                      borderColor: "#6040a0",
+                      color: "#c080ff",
+                    }}
+                  />
+                  {onlineError && (
+                    <p
+                      className="font-mono text-xs text-center"
+                      style={{ color: "#ff6080" }}
+                      data-ocid="online.error_state"
+                    >
+                      {onlineError}
+                    </p>
+                  )}
+                  <div className="flex gap-3">
+                    <Button
+                      data-ocid="online.cancel.button"
+                      onClick={() => cleanupOnline()}
+                      className="font-mono text-xs border flex-1"
+                      style={{
+                        background: "transparent",
+                        borderColor: "#3a2060",
+                        color: "#7050b0",
+                      }}
+                    >
+                      ✕ Back
+                    </Button>
+                    <Button
+                      data-ocid="online.continue.button"
+                      onClick={() => {
+                        if (onlineName.trim()) setOnlineScreen("choice");
+                      }}
+                      disabled={!onlineName.trim()}
+                      className="font-mono font-bold tracking-widest uppercase border flex-[2]"
+                      style={{
+                        background: "rgba(160,80,255,0.15)",
+                        borderColor: "#a050ff",
+                        color: "#c080ff",
+                      }}
+                    >
+                      Continue →
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {/* ── Choice ─────────────────────────────────────────────────── */}
+              {onlineScreen === "choice" && (
+                <>
+                  <div className="text-center">
+                    <p
+                      className="font-mono font-bold tracking-widest uppercase"
+                      style={{ color: "#c080ff", fontSize: "1rem" }}
+                    >
+                      Hello, {onlineName}
+                    </p>
+                    <p
+                      className="font-mono text-xs mt-1"
+                      style={{ color: "#6040a0" }}
+                    >
+                      What would you like to do?
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <Button
+                      data-ocid="online.host.button"
+                      onClick={() => setOnlineScreen("hostSetup")}
+                      className="font-mono font-bold tracking-widest uppercase py-4 border"
+                      style={{
+                        background: "rgba(160,80,255,0.12)",
+                        borderColor: "#a050ff",
+                        color: "#c080ff",
+                        fontSize: "1rem",
+                      }}
+                    >
+                      🏠 Host a Game
+                    </Button>
+                    <Button
+                      data-ocid="online.join.button"
+                      onClick={async () => {
+                        setOnlineScreen("joinList");
+                        await loadOnlineRooms();
+                      }}
+                      className="font-mono font-bold tracking-widest uppercase py-4 border"
+                      style={{
+                        background: "rgba(80,160,255,0.12)",
+                        borderColor: "#50a0ff",
+                        color: "#80c0ff",
+                        fontSize: "1rem",
+                      }}
+                    >
+                      🔍 Join a Game
+                    </Button>
+                  </div>
+                  <Button
+                    data-ocid="online.back.button"
+                    onClick={() => setOnlineScreen("name")}
+                    className="font-mono text-xs border"
+                    style={{
+                      background: "transparent",
+                      borderColor: "#3a2060",
+                      color: "#7050b0",
+                    }}
+                  >
+                    ← Back
+                  </Button>
+                </>
+              )}
+
+              {/* ── Host Setup ─────────────────────────────────────────────── */}
+              {onlineScreen === "hostSetup" && (
+                <>
+                  <div className="text-center">
+                    <p
+                      className="font-mono font-bold tracking-widest uppercase"
+                      style={{ color: "#c080ff", fontSize: "1rem" }}
+                    >
+                      🏠 Host a Game
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-1">
+                      <label
+                        htmlFor="online-roomname"
+                        className="font-mono text-xs"
+                        style={{ color: "#7050b0" }}
+                      >
+                        Room Name
+                      </label>
+                      <Input
+                        id="online-roomname"
+                        data-ocid="online.roomname.input"
+                        value={onlineRoomName}
+                        onChange={(e) => setOnlineRoomName(e.target.value)}
+                        placeholder="My Bomberman Room"
+                        maxLength={30}
+                        className="font-mono text-sm"
+                        style={{
+                          background: "rgba(160,80,255,0.08)",
+                          borderColor: "#6040a0",
+                          color: "#c080ff",
+                        }}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <span
+                        className="font-mono text-xs"
+                        style={{ color: "#7050b0" }}
+                      >
+                        Grid Size
+                      </span>
+                      <div className="flex gap-2">
+                        {(["S", "M", "L"] as const).map((sz) => (
+                          <Button
+                            key={sz}
+                            data-ocid={`online.gridsize.${sz.toLowerCase()}.button`}
+                            onClick={() => setOnlineGridSize(sz)}
+                            className="font-mono font-black text-lg w-14 h-12 border flex-1"
+                            style={{
+                              background:
+                                onlineGridSize === sz
+                                  ? "rgba(160,80,255,0.25)"
+                                  : "rgba(160,80,255,0.05)",
+                              borderColor:
+                                onlineGridSize === sz ? "#a050ff" : "#4a2080",
+                              color:
+                                onlineGridSize === sz ? "#e0a0ff" : "#7050b0",
+                            }}
+                          >
+                            {sz}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  {onlineError && (
+                    <p
+                      className="font-mono text-xs text-center"
+                      style={{ color: "#ff6080" }}
+                      data-ocid="online.error_state"
+                    >
+                      {onlineError}
+                    </p>
+                  )}
+                  <div className="flex gap-3">
+                    <Button
+                      data-ocid="online.hostsetup.back.button"
+                      onClick={() => {
+                        setOnlineError("");
+                        setOnlineScreen("choice");
+                      }}
+                      className="font-mono text-xs border flex-1"
+                      style={{
+                        background: "transparent",
+                        borderColor: "#3a2060",
+                        color: "#7050b0",
+                      }}
+                    >
+                      ← Back
+                    </Button>
+                    <Button
+                      data-ocid="online.create.button"
+                      onClick={handleHostCreate}
+                      disabled={!onlineRoomName.trim() || !actor}
+                      className="font-mono font-bold tracking-widest uppercase border flex-[2]"
+                      style={{
+                        background: "rgba(160,80,255,0.15)",
+                        borderColor: "#a050ff",
+                        color: "#c080ff",
+                      }}
+                    >
+                      ▶ Create Room
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {/* ── Host Waiting ────────────────────────────────────────────── */}
+              {onlineScreen === "hostWaiting" && (
+                <>
+                  <div className="text-center">
+                    <p
+                      className="font-mono font-bold tracking-widest uppercase"
+                      style={{ color: "#c080ff", fontSize: "1rem" }}
+                    >
+                      🏠 Waiting for Player 2
+                    </p>
+                    <p
+                      className="font-mono text-sm mt-1"
+                      style={{ color: "#9060d0" }}
+                    >
+                      {onlineRoomNameDisplay}
+                    </p>
+                  </div>
+                  <div
+                    className="flex justify-center items-center gap-4 py-3 rounded-sm"
+                    style={{
+                      background: "rgba(160,80,255,0.06)",
+                      border: "1px solid rgba(160,80,255,0.15)",
+                    }}
+                  >
+                    <span
+                      className="font-mono text-lg"
+                      style={{
+                        color: onlinePlayerCount >= 2 ? "#80ff80" : "#a050ff",
+                      }}
+                    >
+                      {onlinePlayerCount >= 2 ? "✅" : "⏳"}
+                    </span>
+                    <span
+                      className="font-mono font-bold"
+                      style={{ color: "#c080ff", fontSize: "1.2rem" }}
+                    >
+                      {onlinePlayerCount}/2
+                    </span>
+                    <span
+                      className="font-mono text-xs px-2 py-1 rounded-full"
+                      style={{
+                        background:
+                          onlinePlayerCount >= 2
+                            ? "rgba(0,255,0,0.1)"
+                            : "rgba(160,80,255,0.1)",
+                        color: onlinePlayerCount >= 2 ? "#80ff80" : "#a050ff",
+                        border: `1px solid ${onlinePlayerCount >= 2 ? "rgba(0,255,0,0.3)" : "rgba(160,80,255,0.3)"}`,
+                      }}
+                    >
+                      {onlinePlayerCount >= 2 ? "FULL" : "OPEN"}
+                    </span>
+                  </div>
+                  <div className="text-center">
+                    <p
+                      className="font-mono text-xs"
+                      style={{ color: rtcConnected ? "#80ff80" : "#6040a0" }}
+                    >
+                      {rtcConnected
+                        ? "🟢 P2 Connected via WebRTC"
+                        : "🔵 Establishing connection..."}
+                    </p>
+                  </div>
+                  {onlineError && (
+                    <p
+                      className="font-mono text-xs text-center"
+                      style={{ color: "#ff6080" }}
+                      data-ocid="online.error_state"
+                    >
+                      {onlineError}
+                    </p>
+                  )}
+                  <div className="flex gap-3">
+                    <Button
+                      data-ocid="online.hostwaiting.back.button"
+                      onClick={() => cleanupOnline(onlineRoomId)}
+                      className="font-mono text-xs border flex-1"
+                      style={{
+                        background: "transparent",
+                        borderColor: "#3a2060",
+                        color: "#7050b0",
+                      }}
+                    >
+                      ✕ Leave
+                    </Button>
+                    <Button
+                      data-ocid="online.start.button"
+                      onClick={handleHostStart}
+                      disabled={!rtcConnected}
+                      className="font-mono font-bold tracking-widest uppercase border flex-[2]"
+                      style={{
+                        background: rtcConnected
+                          ? "rgba(0,255,100,0.15)"
+                          : "rgba(80,80,80,0.1)",
+                        borderColor: rtcConnected ? "#00ff64" : "#404040",
+                        color: rtcConnected ? "#00ff64" : "#505050",
+                        cursor: rtcConnected ? "pointer" : "not-allowed",
+                        transition: "all 0.3s",
+                      }}
+                    >
+                      {rtcConnected ? "▶ Start Game" : "Waiting..."}
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {/* ── Join List ───────────────────────────────────────────────── */}
+              {onlineScreen === "joinList" && (
+                <>
+                  <div className="text-center">
+                    <p
+                      className="font-mono font-bold tracking-widest uppercase"
+                      style={{ color: "#80c0ff", fontSize: "1rem" }}
+                    >
+                      🔍 Available Rooms
+                    </p>
+                  </div>
+                  <div
+                    className="flex flex-col gap-2"
+                    style={{
+                      minHeight: 120,
+                      maxHeight: 260,
+                      overflowY: "auto",
+                    }}
+                  >
+                    {onlineRooms.length === 0 ? (
+                      <div
+                        data-ocid="online.rooms.empty_state"
+                        className="flex flex-col items-center justify-center gap-2 py-8"
+                        style={{ color: "#4a3080" }}
+                      >
+                        <span className="text-2xl">🎮</span>
+                        <p className="font-mono text-xs">No rooms available</p>
+                        <p
+                          className="font-mono text-xs"
+                          style={{ color: "#3a2060" }}
+                        >
+                          Be the first to host!
+                        </p>
+                      </div>
+                    ) : (
+                      onlineRooms.map((room, idx) => {
+                        const isFull = Number(room.playerCount) >= 2;
+                        return (
+                          <button
+                            key={room.id}
+                            data-ocid={`online.rooms.item.${idx + 1}`}
+                            onClick={() => {
+                              if (!isFull)
+                                handleGuestJoin(room.id, room.roomName);
+                            }}
+                            disabled={isFull}
+                            type="button"
+                            className="flex items-center justify-between p-3 rounded-sm text-left transition-all"
+                            style={{
+                              background: isFull
+                                ? "rgba(80,80,80,0.08)"
+                                : "rgba(80,160,255,0.08)",
+                              border: `1px solid ${isFull ? "rgba(80,80,80,0.2)" : "rgba(80,160,255,0.25)"}`,
+                              cursor: isFull ? "not-allowed" : "pointer",
+                              opacity: isFull ? 0.6 : 1,
+                            }}
+                          >
+                            <div className="flex flex-col gap-0.5">
+                              <span
+                                className="font-mono font-bold text-sm"
+                                style={{
+                                  color: isFull ? "#808080" : "#80c0ff",
+                                }}
+                              >
+                                {room.roomName}
+                              </span>
+                              <span
+                                className="font-mono text-xs"
+                                style={{ color: "#4060a0" }}
+                              >
+                                Host: {room.hostName} &nbsp;·&nbsp; Grid:{" "}
+                                {room.gridSize}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="font-mono text-xs font-bold px-2 py-1 rounded-full"
+                                style={{
+                                  background: isFull
+                                    ? "rgba(255,100,100,0.12)"
+                                    : "rgba(80,255,80,0.1)",
+                                  color: isFull ? "#ff8080" : "#80ff80",
+                                  border: `1px solid ${isFull ? "rgba(255,100,100,0.3)" : "rgba(80,255,80,0.3)"}`,
+                                }}
+                              >
+                                {Number(room.playerCount)}/2{" "}
+                                {isFull ? "FULL" : ""}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                  {onlineError && (
+                    <p
+                      className="font-mono text-xs text-center"
+                      style={{ color: "#ff6080" }}
+                      data-ocid="online.error_state"
+                    >
+                      {onlineError}
+                    </p>
+                  )}
+                  <div className="flex gap-3">
+                    <Button
+                      data-ocid="online.joinlist.back.button"
+                      onClick={() => {
+                        setOnlineError("");
+                        setOnlineScreen("choice");
+                      }}
+                      className="font-mono text-xs border flex-1"
+                      style={{
+                        background: "transparent",
+                        borderColor: "#3a2060",
+                        color: "#7050b0",
+                      }}
+                    >
+                      ← Back
+                    </Button>
+                    <Button
+                      data-ocid="online.refresh.button"
+                      onClick={loadOnlineRooms}
+                      className="font-mono font-bold tracking-widest uppercase border flex-[2]"
+                      style={{
+                        background: "rgba(80,160,255,0.12)",
+                        borderColor: "#50a0ff",
+                        color: "#80c0ff",
+                      }}
+                    >
+                      🔄 Refresh
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {/* ── Join Waiting ─────────────────────────────────────────────── */}
+              {onlineScreen === "joinWaiting" && (
+                <>
+                  <div className="text-center">
+                    <p
+                      className="font-mono font-bold tracking-widest uppercase"
+                      style={{ color: "#80c0ff", fontSize: "1rem" }}
+                    >
+                      🔵 Joined Room
+                    </p>
+                    <p
+                      className="font-mono text-sm mt-1"
+                      style={{ color: "#5080c0" }}
+                    >
+                      {onlineRoomNameDisplay}
+                    </p>
+                  </div>
+                  <div
+                    className="flex flex-col items-center gap-3 py-5"
+                    style={{
+                      background: "rgba(80,160,255,0.05)",
+                      border: "1px solid rgba(80,160,255,0.12)",
+                      borderRadius: 4,
+                    }}
+                  >
+                    <div
+                      className="w-8 h-8 rounded-full border-2 border-t-transparent animate-spin"
+                      style={{
+                        borderColor: "#50a0ff",
+                        borderTopColor: "transparent",
+                      }}
+                    />
+                    <p
+                      className="font-mono text-sm"
+                      style={{ color: "#80c0ff" }}
+                    >
+                      Waiting for host to start...
+                    </p>
+                    <p
+                      className="font-mono text-xs"
+                      style={{ color: rtcConnected ? "#80ff80" : "#3060a0" }}
+                    >
+                      {rtcConnected
+                        ? "🟢 WebRTC Connected"
+                        : "🔵 Connecting..."}
+                    </p>
+                  </div>
+                  {onlineError && (
+                    <p
+                      className="font-mono text-xs text-center"
+                      style={{ color: "#ff6080" }}
+                      data-ocid="online.error_state"
+                    >
+                      {onlineError}
+                    </p>
+                  )}
+                  <Button
+                    data-ocid="online.joinwaiting.leave.button"
+                    onClick={() => cleanupOnline(onlineRoomId)}
+                    className="font-mono text-xs border w-full"
+                    style={{
+                      background: "transparent",
+                      borderColor: "#3a2060",
+                      color: "#7050b0",
+                    }}
+                  >
+                    ✕ Leave Room
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }

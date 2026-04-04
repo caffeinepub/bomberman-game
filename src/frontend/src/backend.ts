@@ -89,12 +89,108 @@ export class ExternalBlob {
         return this;
     }
 }
+export interface RoomInfo {
+    id: string;
+    hostName: string;
+    gridSize: string;
+    playerCount: bigint;
+    roomName: string;
+}
 export interface backendInterface {
+    createRoom(roomName: string, hostName: string, gridSize: string): Promise<string>;
+    getAndClearP2Inputs(roomId: string): Promise<Array<string>>;
+    getAnswer(roomId: string): Promise<string | null>;
+    getGameState(roomId: string): Promise<string | null>;
+    getGuestIce(roomId: string): Promise<Array<string>>;
     getHighScore(): Promise<bigint>;
+    getHostIce(roomId: string): Promise<Array<string>>;
+    getOffer(roomId: string): Promise<string | null>;
+    isGameStarted(roomId: string): Promise<boolean>;
+    joinRoom(roomId: string): Promise<boolean>;
+    keepAlive(roomId: string): Promise<void>;
+    leaveRoom(roomId: string): Promise<void>;
+    listRooms(): Promise<Array<RoomInfo>>;
+    pushAnswer(roomId: string, answer: string): Promise<void>;
+    pushGameState(roomId: string, stateJson: string): Promise<void>;
+    pushGuestIce(roomId: string, candidate: string): Promise<void>;
+    pushHostIce(roomId: string, candidate: string): Promise<void>;
+    pushOffer(roomId: string, offer: string): Promise<void>;
+    startGame(roomId: string): Promise<void>;
+    submitP2Input(roomId: string, inputJson: string): Promise<void>;
     submitScore(score: bigint): Promise<bigint>;
 }
 export class Backend implements backendInterface {
     constructor(private actor: ActorSubclass<_SERVICE>, private _uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, private _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, private processError?: (error: unknown) => never){}
+    async createRoom(arg0: string, arg1: string, arg2: string): Promise<string> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.createRoom(arg0, arg1, arg2);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.createRoom(arg0, arg1, arg2);
+            return result;
+        }
+    }
+    async getAndClearP2Inputs(arg0: string): Promise<Array<string>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getAndClearP2Inputs(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getAndClearP2Inputs(arg0);
+            return result;
+        }
+    }
+    async getAnswer(arg0: string): Promise<string | null> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getAnswer(arg0);
+                return from_candid_opt_n1(this._uploadFile, this._downloadFile, result);
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getAnswer(arg0);
+            return from_candid_opt_n1(this._uploadFile, this._downloadFile, result);
+        }
+    }
+    async getGameState(arg0: string): Promise<string | null> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getGameState(arg0);
+                return from_candid_opt_n1(this._uploadFile, this._downloadFile, result);
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getGameState(arg0);
+            return from_candid_opt_n1(this._uploadFile, this._downloadFile, result);
+        }
+    }
+    async getGuestIce(arg0: string): Promise<Array<string>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getGuestIce(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getGuestIce(arg0);
+            return result;
+        }
+    }
     async getHighScore(): Promise<bigint> {
         if (this.processError) {
             try {
@@ -106,6 +202,202 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.getHighScore();
+            return result;
+        }
+    }
+    async getHostIce(arg0: string): Promise<Array<string>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getHostIce(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getHostIce(arg0);
+            return result;
+        }
+    }
+    async getOffer(arg0: string): Promise<string | null> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.getOffer(arg0);
+                return from_candid_opt_n1(this._uploadFile, this._downloadFile, result);
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.getOffer(arg0);
+            return from_candid_opt_n1(this._uploadFile, this._downloadFile, result);
+        }
+    }
+    async isGameStarted(arg0: string): Promise<boolean> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.isGameStarted(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.isGameStarted(arg0);
+            return result;
+        }
+    }
+    async joinRoom(arg0: string): Promise<boolean> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.joinRoom(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.joinRoom(arg0);
+            return result;
+        }
+    }
+    async keepAlive(arg0: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.keepAlive(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.keepAlive(arg0);
+            return result;
+        }
+    }
+    async leaveRoom(arg0: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.leaveRoom(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.leaveRoom(arg0);
+            return result;
+        }
+    }
+    async listRooms(): Promise<Array<RoomInfo>> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.listRooms();
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.listRooms();
+            return result;
+        }
+    }
+    async pushAnswer(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.pushAnswer(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.pushAnswer(arg0, arg1);
+            return result;
+        }
+    }
+    async pushGameState(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.pushGameState(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.pushGameState(arg0, arg1);
+            return result;
+        }
+    }
+    async pushGuestIce(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.pushGuestIce(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.pushGuestIce(arg0, arg1);
+            return result;
+        }
+    }
+    async pushHostIce(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.pushHostIce(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.pushHostIce(arg0, arg1);
+            return result;
+        }
+    }
+    async pushOffer(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.pushOffer(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.pushOffer(arg0, arg1);
+            return result;
+        }
+    }
+    async startGame(arg0: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.startGame(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.startGame(arg0);
+            return result;
+        }
+    }
+    async submitP2Input(arg0: string, arg1: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.submitP2Input(arg0, arg1);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.submitP2Input(arg0, arg1);
             return result;
         }
     }
@@ -123,6 +415,9 @@ export class Backend implements backendInterface {
             return result;
         }
     }
+}
+function from_candid_opt_n1(_uploadFile: (file: ExternalBlob) => Promise<Uint8Array>, _downloadFile: (file: Uint8Array) => Promise<ExternalBlob>, value: [] | [string]): string | null {
+    return value.length === 0 ? null : value[0];
 }
 export interface CreateActorOptions {
     agent?: Agent;

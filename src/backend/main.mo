@@ -1,10 +1,14 @@
-import Array "mo:base/Array";
-import Int "mo:base/Int";
-import Nat "mo:base/Nat";
-import Principal "mo:base/Principal";
-import Text "mo:base/Text";
-import Time "mo:base/Time";
+import Array "mo:core/Array";
+import Int "mo:core/Int";
+import Iter "mo:core/Iter";
+import Nat "mo:core/Nat";
+import Principal "mo:core/Principal";
+import Text "mo:core/Text";
+import Time "mo:core/Time";
+import Map "mo:core/Map";
+import Migration "migration";
 
+(with migration = Migration.run)
 actor {
   // ── Legacy high score ────────────────────────────────────────────────
   stable var highScore : Nat = 0;
@@ -16,42 +20,53 @@ actor {
 
   public query func getHighScore() : async Nat { highScore };
 
-  // ── Types ─────────────────────────────────────────────────────────────
+  // ── Types ────────────────────────────────────────────────────────────
+  // Enhanced room record with signaling support.
   type RoomRecord = {
-    id          : Text;
-    hostId      : Principal;
-    guestId     : ?Principal;
-    gameState   : Text;
-    p2Inputs    : [Text];
-    lastBeat    : Int;
-    active      : Bool;
+    id : Text;
+    hostPrincipal : Principal;
+    guestPrincipal : ?Principal;
+    roomName : Text;
+    hostName : Text;
+    gridSize : Text;
+    gameState : Text;
+    p2Inputs : [Text];
+    hostOffer : Text;
+    guestAnswer : Text;
+    hostIce : [Text];
+    guestIce : [Text];
+    gameStarted : Bool;
+    lastBeat : Int;
+    active : Bool;
   };
 
   type RoomInfo = {
-    id          : Text;
-    hostId      : Principal;
+    id : Text;
+    roomName : Text;
+    hostName : Text;
+    gridSize : Text;
     playerCount : Nat;
   };
 
-  // ── Stable state ──────────────────────────────────────────────────────
-  stable var rooms       : [RoomRecord] = [];
-  stable var roomCounter : Nat          = 0;
+  // ── Stable state ─────────────────────────────────────────────────────
+  let roomStore = Map.empty<Text, RoomRecord>();
+  stable var roomCounter : Nat = 0;
 
-  // ── Helpers ───────────────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────
   func nowMs() : Int { Time.now() / 1_000_000 };
 
   func genId() : Text {
     roomCounter += 1;
-    let n  = roomCounter;
+    let n = roomCounter;
     let ch = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     var id = "";
-    var v  = n;
-    var i  = 0;
+    var v = n;
+    var i = 0;
     while (i < 4) {
       let idx = v % 32;
       v := v / 32;
       var j : Nat = 0;
-      label findChar for (c in Text.toIter(ch)) {
+      label findChar for (c in ch.toIter()) {
         if (j == idx) { id := id # Text.fromChar(c); break findChar };
         j += 1;
       };
@@ -61,60 +76,69 @@ actor {
   };
 
   func cleanup() {
-    let stale = nowMs() - 30_000;
-    rooms := Array.filter<RoomRecord>(rooms, func(r) { r.active and r.lastBeat >= stale });
+    let stale = nowMs() - 30_000; // 30s timeout
+    for ((id, room) in roomStore.entries()) {
+      if (room.active and room.lastBeat < stale) {
+        roomStore.add(id, { room with active = false });
+      };
+    };
   };
 
-  func updateRoom(roomId : Text, f : RoomRecord -> RoomRecord) {
-    rooms := Array.map<RoomRecord, RoomRecord>(rooms, func(r) {
-      if (r.id == roomId) f(r) else r
-    });
+  func findActiveRoom(roomId : Text) : ?RoomRecord {
+    roomStore.get(roomId);
   };
 
-  func findRoom(roomId : Text) : ?RoomRecord {
-    Array.find<RoomRecord>(rooms, func(r) { r.id == roomId and r.active });
-  };
-
-  // ── Room management ───────────────────────────────────────────────────
-  public shared ({ caller }) func createRoom() : async Text {
+  // ── Room management ──────────────────────────────────────────────────
+  public shared ({ caller }) func createRoom(roomName : Text, hostName : Text, gridSize : Text) : async Text {
     cleanup();
     let id = genId();
-    let r : RoomRecord = {
-      id        = id;
-      hostId    = caller;
-      guestId   = null;
+    let room : RoomRecord = {
+      id;
+      hostPrincipal = caller;
+      guestPrincipal = null;
+      roomName;
+      hostName;
+      gridSize;
       gameState = "";
-      p2Inputs  = [];
-      lastBeat  = nowMs();
-      active    = true;
+      p2Inputs = [];
+      hostOffer = "";
+      guestAnswer = "";
+      hostIce = [];
+      guestIce = [];
+      gameStarted = false;
+      lastBeat = nowMs();
+      active = true;
     };
-    rooms := Array.append<RoomRecord>(rooms, [r]);
+    roomStore.add(id, room);
     id;
   };
 
   public query func listRooms() : async [RoomInfo] {
-    Array.map<RoomRecord, RoomInfo>(
-      Array.filter<RoomRecord>(rooms, func(r) { r.active }),
+    let roomsArray = roomStore.values().toArray();
+    let activeRooms = roomsArray.filter(func(r) { r.active });
+    activeRooms.map(
       func(r) {
-        let pc : Nat = switch (r.guestId) { case null 1; case _ 2 };
-        { id = r.id; hostId = r.hostId; playerCount = pc };
-      },
+        let pc : Nat = switch (r.guestPrincipal) { case (null) { 1 }; case (_) { 2 } };
+        {
+          id = r.id;
+          roomName = r.roomName;
+          hostName = r.hostName;
+          gridSize = r.gridSize;
+          playerCount = pc;
+        };
+      }
     );
   };
 
   public shared ({ caller }) func joinRoom(roomId : Text) : async Bool {
     cleanup();
-    switch (findRoom(roomId)) {
-      case null false;
-      case (?r) {
-        switch (r.guestId) {
-          case (?_) false;
-          case null {
-            updateRoom(roomId, func(old) {
-              { id = old.id; hostId = old.hostId; guestId = ?caller;
-                gameState = old.gameState; p2Inputs = old.p2Inputs;
-                lastBeat = nowMs(); active = old.active };
-            });
+    switch (findActiveRoom(roomId)) {
+      case (null) { false };
+      case (?room) {
+        switch (room.guestPrincipal) {
+          case (?_) { false };
+          case (null) {
+            roomStore.add(roomId, { room with guestPrincipal = ?caller; lastBeat = nowMs() });
             true;
           };
         };
@@ -123,63 +147,177 @@ actor {
   };
 
   public shared func leaveRoom(roomId : Text) : async () {
-    rooms := Array.filter<RoomRecord>(rooms, func(r) { r.id != roomId });
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        roomStore.add(roomId, { room with active = false });
+      };
+    };
   };
 
   public shared func keepAlive(roomId : Text) : async () {
-    updateRoom(roomId, func(old) {
-      { id = old.id; hostId = old.hostId; guestId = old.guestId;
-        gameState = old.gameState; p2Inputs = old.p2Inputs;
-        lastBeat = nowMs(); active = old.active };
-    });
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        roomStore.add(roomId, { room with lastBeat = nowMs() });
+      };
+    };
   };
 
-  // ── State relay ───────────────────────────────────────────────────────
+  // ── State relay ──────────────────────────────────────────────────────
   public shared ({ caller }) func pushGameState(roomId : Text, stateJson : Text) : async () {
-    switch (findRoom(roomId)) {
-      case null ();
-      case (?r) {
-        if (Principal.equal(caller, r.hostId)) {
-          updateRoom(roomId, func(old) {
-            { id = old.id; hostId = old.hostId; guestId = old.guestId;
-              gameState = stateJson; p2Inputs = old.p2Inputs;
-              lastBeat = nowMs(); active = old.active };
-          });
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        if (Principal.equal(caller, room.hostPrincipal)) {
+          roomStore.add(roomId, { room with gameState = stateJson });
         };
       };
     };
   };
 
   public query func getGameState(roomId : Text) : async ?Text {
-    switch (findRoom(roomId)) {
-      case null null;
-      case (?r) { if (Text.size(r.gameState) > 0) ?r.gameState else null };
+    switch (findActiveRoom(roomId)) {
+      case (null) { null };
+      case (?room) { if (room.gameState.size() > 0) { ?room.gameState } else { null } };
     };
   };
 
-  // ── Input relay ───────────────────────────────────────────────────────
+  // ── Input relay ──────────────────────────────────────────────────────
   public shared func submitP2Input(roomId : Text, inputJson : Text) : async () {
-    updateRoom(roomId, func(old) {
-      { id = old.id; hostId = old.hostId; guestId = old.guestId;
-        gameState = old.gameState;
-        p2Inputs = Array.append<Text>(old.p2Inputs, [inputJson]);
-        lastBeat = nowMs(); active = old.active };
-    });
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        let newInputs = room.p2Inputs.concat([inputJson]);
+        roomStore.add(roomId, { room with p2Inputs = newInputs });
+      };
+    };
   };
 
   public shared ({ caller }) func getAndClearP2Inputs(roomId : Text) : async [Text] {
-    switch (findRoom(roomId)) {
-      case null [];
-      case (?r) {
-        if (not Principal.equal(caller, r.hostId)) return [];
-        let out = r.p2Inputs;
-        updateRoom(roomId, func(old) {
-          { id = old.id; hostId = old.hostId; guestId = old.guestId;
-            gameState = old.gameState; p2Inputs = [];
-            lastBeat = old.lastBeat; active = old.active };
-        });
+    switch (findActiveRoom(roomId)) {
+      case (null) { [] };
+      case (?room) {
+        if (not Principal.equal(caller, room.hostPrincipal)) { return [] };
+        let out = room.p2Inputs;
+        roomStore.add(roomId, { room with p2Inputs = [] });
         out;
       };
+    };
+  };
+
+  // ── WebRTC signaling support ─────────────────────────────────────────
+  public shared ({ caller }) func pushOffer(roomId : Text, offer : Text) : async () {
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        if (Principal.equal(caller, room.hostPrincipal)) {
+          roomStore.add(roomId, { room with hostOffer = offer });
+        };
+      };
+    };
+  };
+
+  public shared ({ caller }) func pushAnswer(roomId : Text, answer : Text) : async () {
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        switch (room.guestPrincipal) {
+          case (?p) {
+            if (Principal.equal(caller, p)) {
+              roomStore.add(roomId, { room with guestAnswer = answer });
+            };
+          };
+          case (null) {};
+        };
+      };
+    };
+  };
+
+  public shared ({ caller }) func pushHostIce(roomId : Text, candidate : Text) : async () {
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        if (Principal.equal(caller, room.hostPrincipal)) {
+          let newIce = room.hostIce.concat([candidate]);
+          roomStore.add(roomId, { room with hostIce = newIce });
+        };
+      };
+    };
+  };
+
+  public shared ({ caller }) func pushGuestIce(roomId : Text, candidate : Text) : async () {
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        switch (room.guestPrincipal) {
+          case (?p) {
+            if (Principal.equal(caller, p)) {
+              let newIce = room.guestIce.concat([candidate]);
+              roomStore.add(roomId, { room with guestIce = newIce });
+            };
+          };
+          case (null) {};
+        };
+      };
+    };
+  };
+
+  public query func getOffer(roomId : Text) : async ?Text {
+    switch (findActiveRoom(roomId)) {
+      case (null) { null };
+      case (?room) {
+        if (room.hostOffer.size() > 0) {
+          ?room.hostOffer;
+        } else {
+          null;
+        };
+      };
+    };
+  };
+
+  public query func getAnswer(roomId : Text) : async ?Text {
+    switch (findActiveRoom(roomId)) {
+      case (null) { null };
+      case (?room) {
+        if (room.guestAnswer.size() > 0) {
+          ?room.guestAnswer;
+        } else {
+          null;
+        };
+      };
+    };
+  };
+
+  public query func getHostIce(roomId : Text) : async [Text] {
+    switch (findActiveRoom(roomId)) {
+      case (null) { [] };
+      case (?room) { room.hostIce };
+    };
+  };
+
+  public query func getGuestIce(roomId : Text) : async [Text] {
+    switch (findActiveRoom(roomId)) {
+      case (null) { [] };
+      case (?room) { room.guestIce };
+    };
+  };
+
+  public shared ({ caller }) func startGame(roomId : Text) : async () {
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        if (Principal.equal(caller, room.hostPrincipal)) {
+          roomStore.add(roomId, { room with gameStarted = true });
+        };
+      };
+    };
+  };
+
+  public query func isGameStarted(roomId : Text) : async Bool {
+    switch (findActiveRoom(roomId)) {
+      case (null) { false };
+      case (?room) { room.gameStarted };
     };
   };
 };
