@@ -14,6 +14,7 @@ export const RoomInfo = IDL.Record({
   'gridSize' : IDL.Text,
   'playerCount' : IDL.Nat,
   'roomName' : IDL.Text,
+  'gameStarted' : IDL.Bool,
 });
 
 export const idlService = IDL.Service({
@@ -25,10 +26,13 @@ export const idlService = IDL.Service({
   'getHighScore' : IDL.Func([], [IDL.Nat], ['query']),
   'getHostIce' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], ['query']),
   'getOffer' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+  'hasGuest' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
   'isGameStarted' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
   'joinRoom' : IDL.Func([IDL.Text], [IDL.Bool], []),
   'keepAlive' : IDL.Func([IDL.Text], [], []),
   'leaveRoom' : IDL.Func([IDL.Text], [], []),
+  'leaveRoomAsGuest' : IDL.Func([IDL.Text], [], []),
+  'leaveRoomAsHost' : IDL.Func([IDL.Text], [], []),
   'listRooms' : IDL.Func([], [IDL.Vec(RoomInfo)], ['query']),
   'pushAnswer' : IDL.Func([IDL.Text, IDL.Text], [], []),
   'pushGameState' : IDL.Func([IDL.Text, IDL.Text], [], []),
@@ -49,6 +53,7 @@ export const idlFactory = ({ IDL }) => {
     'gridSize' : IDL.Text,
     'playerCount' : IDL.Nat,
     'roomName' : IDL.Text,
+    'gameStarted' : IDL.Bool,
   });
   
   return IDL.Service({
@@ -60,10 +65,13 @@ export const idlFactory = ({ IDL }) => {
     'getHighScore' : IDL.Func([], [IDL.Nat], ['query']),
     'getHostIce' : IDL.Func([IDL.Text], [IDL.Vec(IDL.Text)], ['query']),
     'getOffer' : IDL.Func([IDL.Text], [IDL.Opt(IDL.Text)], ['query']),
+    'hasGuest' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
     'isGameStarted' : IDL.Func([IDL.Text], [IDL.Bool], ['query']),
     'joinRoom' : IDL.Func([IDL.Text], [IDL.Bool], []),
     'keepAlive' : IDL.Func([IDL.Text], [], []),
     'leaveRoom' : IDL.Func([IDL.Text], [], []),
+    'leaveRoomAsGuest' : IDL.Func([IDL.Text], [], []),
+    'leaveRoomAsHost' : IDL.Func([IDL.Text], [], []),
     'listRooms' : IDL.Func([], [IDL.Vec(RoomInfo)], ['query']),
     'pushAnswer' : IDL.Func([IDL.Text, IDL.Text], [], []),
     'pushGameState' : IDL.Func([IDL.Text, IDL.Text], [], []),

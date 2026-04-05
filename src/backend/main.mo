@@ -46,6 +46,7 @@ actor {
     hostName : Text;
     gridSize : Text;
     playerCount : Nat;
+    gameStarted : Bool;
   };
 
   // ── Stable state ─────────────────────────────────────────────────────
@@ -115,8 +116,11 @@ actor {
 
   public query func listRooms() : async [RoomInfo] {
     let roomsArray = roomStore.values().toArray();
-    let activeRooms = roomsArray.filter(func(r) { r.active });
-    activeRooms.map(
+    // Show active rooms AND rooms where game started but guest slot is empty (rejoinable)
+    let visibleRooms = roomsArray.filter(func(r) {
+      r.active and (not r.gameStarted or r.guestPrincipal == null)
+    });
+    visibleRooms.map(
       func(r) {
         let pc : Nat = switch (r.guestPrincipal) { case (null) { 1 }; case (_) { 2 } };
         {
@@ -125,20 +129,29 @@ actor {
           hostName = r.hostName;
           gridSize = r.gridSize;
           playerCount = pc;
+          gameStarted = r.gameStarted;
         };
       }
     );
   };
 
+  // Join a room -- works even if game has started as long as guest slot is empty
   public shared ({ caller }) func joinRoom(roomId : Text) : async Bool {
     cleanup();
     switch (findActiveRoom(roomId)) {
       case (null) { false };
       case (?room) {
         switch (room.guestPrincipal) {
-          case (?_) { false };
+          case (?_) { false }; // slot taken
           case (null) {
-            roomStore.add(roomId, { room with guestPrincipal = ?caller; lastBeat = nowMs() });
+            roomStore.add(roomId, {
+              room with
+              guestPrincipal = ?caller;
+              lastBeat = nowMs();
+              // Reset signaling fields for new guest
+              guestAnswer = "";
+              guestIce = [];
+            });
             true;
           };
         };
@@ -146,11 +159,77 @@ actor {
     };
   };
 
-  public shared func leaveRoom(roomId : Text) : async () {
+  // Guest leaving: only clears the guest slot, room stays active for new joiners
+  public shared ({ caller }) func leaveRoomAsGuest(roomId : Text) : async () {
     switch (findActiveRoom(roomId)) {
       case (null) {};
       case (?room) {
-        roomStore.add(roomId, { room with active = false });
+        switch (room.guestPrincipal) {
+          case (?p) {
+            if (Principal.equal(caller, p)) {
+              roomStore.add(roomId, {
+                room with
+                guestPrincipal = null;
+                // Reset signaling for next guest
+                guestAnswer = "";
+                guestIce = [];
+              });
+            };
+          };
+          case (null) {};
+        };
+      };
+    };
+  };
+
+  // Host leaving: marks room inactive, removes it from listings
+  public shared ({ caller }) func leaveRoomAsHost(roomId : Text) : async () {
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        if (Principal.equal(caller, room.hostPrincipal)) {
+          roomStore.add(roomId, { room with active = false });
+        };
+      };
+    };
+  };
+
+  // Legacy leaveRoom -- kept for backwards compat, behaves as host leave
+  public shared ({ caller }) func leaveRoom(roomId : Text) : async () {
+    switch (findActiveRoom(roomId)) {
+      case (null) {};
+      case (?room) {
+        if (Principal.equal(caller, room.hostPrincipal)) {
+          roomStore.add(roomId, { room with active = false });
+        } else {
+          // Guest leaving
+          switch (room.guestPrincipal) {
+            case (?p) {
+              if (Principal.equal(caller, p)) {
+                roomStore.add(roomId, {
+                  room with
+                  guestPrincipal = null;
+                  guestAnswer = "";
+                  guestIce = [];
+                });
+              };
+            };
+            case (null) {};
+          };
+        };
+      };
+    };
+  };
+
+  // Query whether a room currently has an active guest
+  public query func hasGuest(roomId : Text) : async Bool {
+    switch (findActiveRoom(roomId)) {
+      case (null) { false };
+      case (?room) {
+        switch (room.guestPrincipal) {
+          case (null) { false };
+          case (?_) { true };
+        };
       };
     };
   };

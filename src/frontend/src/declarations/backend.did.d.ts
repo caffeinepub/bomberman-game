@@ -16,6 +16,7 @@ export interface RoomInfo {
   'gridSize' : string,
   'playerCount' : bigint,
   'roomName' : string,
+  'gameStarted' : boolean,
 }
 export interface _SERVICE {
   'createRoom' : ActorMethod<[string, string, string], string>,
@@ -26,10 +27,13 @@ export interface _SERVICE {
   'getHighScore' : ActorMethod<[], bigint>,
   'getHostIce' : ActorMethod<[string], Array<string>>,
   'getOffer' : ActorMethod<[string], [] | [string]>,
+  'hasGuest' : ActorMethod<[string], boolean>,
   'isGameStarted' : ActorMethod<[string], boolean>,
   'joinRoom' : ActorMethod<[string], boolean>,
   'keepAlive' : ActorMethod<[string], undefined>,
   'leaveRoom' : ActorMethod<[string], undefined>,
+  'leaveRoomAsGuest' : ActorMethod<[string], undefined>,
+  'leaveRoomAsHost' : ActorMethod<[string], undefined>,
   'listRooms' : ActorMethod<[], Array<RoomInfo>>,
   'pushAnswer' : ActorMethod<[string, string], undefined>,
   'pushGameState' : ActorMethod<[string, string], undefined>,

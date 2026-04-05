@@ -98,6 +98,13 @@ export default function App() {
   const [onlinePlayerCount, setOnlinePlayerCount] = useState(1);
   const [onlineRoomNameDisplay, setOnlineRoomNameDisplay] = useState("");
   const onlineIntervalsRef = useRef<number[]>([]);
+  const onlineGuestActiveRef = useRef(false);
+  // Online co-op guest interpolation refs
+  const hasReceivedFirstPacketRef = useRef(false);
+  const prevRemoteStateRef = useRef<GameState | null>(null);
+  const lastPacketTimeRef = useRef<number>(0);
+  const currentPacketTimeRef = useRef<number>(0);
+  const [p2LeftMessage, setP2LeftMessage] = useState("");
   const [displayScore, setDisplayScore] = useState(0);
   const [displayLives, setDisplayLives] = useState(3);
   const [displayLevel, setDisplayLevel] = useState(1);
@@ -318,25 +325,128 @@ export default function App() {
 
       // Online co-op: guest receives state snapshot and renders it, no simulation
       if (isOnlineCoopRef.current && onlineRoleRef.current === "guest") {
-        let renderGs = gs;
+        // Consume latest remote packet if available
         if (latestRemoteStateRef.current) {
-          const newGs = deserializeGameState(latestRemoteStateRef.current);
-          gsRef.current = newGs;
-          renderGs = newGs;
+          const packetJson = latestRemoteStateRef.current;
           latestRemoteStateRef.current = null;
+          const newGs = deserializeGameState(packetJson);
+          // Store previous state for interpolation
+          prevRemoteStateRef.current = gsRef.current;
+          gsRef.current = newGs;
+          // Track packet arrival times for interpolation
+          lastPacketTimeRef.current = currentPacketTimeRef.current || now;
+          currentPacketTimeRef.current = now;
+          hasReceivedFirstPacketRef.current = true;
         }
+
+        // Bug 2 fix: don't render until the first real packet arrives
+        if (!hasReceivedFirstPacketRef.current) {
+          const canvas = canvasRef.current;
+          if (canvas) {
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.fillStyle = "#050510";
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.fillStyle = "#7fffa0";
+              ctx.font = "bold 20px monospace";
+              ctx.textAlign = "center";
+              ctx.fillText(
+                "Connecting...",
+                canvas.width / 2,
+                canvas.height / 2,
+              );
+              ctx.textAlign = "left";
+            }
+          }
+          return;
+        }
+
+        const latestGs = gsRef.current!;
+
+        // Bug 3 fix: client-side position interpolation so guest runs at 60fps
+        // even though state only arrives at ~10Hz
+        const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+        let renderGs = latestGs;
+        const prev = prevRemoteStateRef.current;
+        const packetInterval =
+          currentPacketTimeRef.current - lastPacketTimeRef.current;
+        if (prev && packetInterval > 0) {
+          const elapsed = now - currentPacketTimeRef.current;
+          const t = Math.min(elapsed / packetInterval, 1);
+          if (t < 1) {
+            // Build a shallow-cloned render state with interpolated pixel positions
+            const interpPlayer = {
+              ...latestGs.player,
+              px: lerp(prev.player.px, latestGs.player.px, t),
+              py: lerp(prev.player.py, latestGs.player.py, t),
+            };
+            let interpPlayer2 = latestGs.player2;
+            if (latestGs.player2 && prev.player2) {
+              interpPlayer2 = {
+                ...latestGs.player2,
+                px: lerp(prev.player2.px, latestGs.player2.px, t),
+                py: lerp(prev.player2.py, latestGs.player2.py, t),
+              };
+            }
+            const interpEnemies = latestGs.enemies.map((enemy) => {
+              const prevEnemy = prev.enemies.find((e) => e.id === enemy.id);
+              if (!prevEnemy) return enemy;
+              return {
+                ...enemy,
+                px: lerp(prevEnemy.px, enemy.px, t),
+                py: lerp(prevEnemy.py, enemy.py, t),
+              };
+            });
+            renderGs = {
+              ...latestGs,
+              player: interpPlayer,
+              player2: interpPlayer2,
+              enemies: interpEnemies,
+            };
+          }
+        }
+
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
         drawGame(ctx, renderGs, now);
-        // Sync display state from remote gs
-        setDisplayScore(renderGs.score);
-        setDisplayLevel(renderGs.level);
-        if (renderGs.status === "gameover") {
+
+        // Bug 1 fix: sync ALL HUD display state from the remote game state
+        // P1 (host) = renderGs.player, P2 (guest) = renderGs.player2
+        const p1 = latestGs.player;
+        const p2g = latestGs.player2;
+        setDisplayScore(latestGs.score);
+        setDisplayLevel(latestGs.level);
+        setDisplayLives(Math.min(p1.lives, 3));
+        setDisplayShield(
+          p1.shieldActive ? Math.ceil(p1.shieldTimer / 1000) : 0,
+        );
+        setDisplayStats({
+          maxBombs: p1.maxBombs,
+          range: p1.explosionRange,
+          speed: p1.speedMultiplier,
+        });
+        setDisplayBombType(p1.bombType);
+        if (p2g) {
+          setDisplayLivesP2(Math.min(p2g.lives, 3));
+          setDisplayStatsP2({
+            maxBombs: p2g.maxBombs,
+            range: p2g.explosionRange,
+            speed: p2g.speedMultiplier,
+          });
+          setDisplayBombTypeP2(p2g.bombType);
+          setDisplayShieldP2(
+            p2g.shieldActive ? Math.ceil(p2g.shieldTimer / 1000) : 0,
+          );
+        }
+        setDisplayIsMultiplayer(true);
+        setDisplayTimer(latestGs.timerMs);
+
+        if (latestGs.status === "gameover") {
           setGameStatus("gameover");
-          setFinalScore(renderGs.score);
-        } else if (renderGs.status === "levelcomplete") {
+          setFinalScore(latestGs.score);
+        } else if (latestGs.status === "levelcomplete") {
           setGameStatus("levelcomplete");
         }
         return;
@@ -1206,6 +1316,10 @@ export default function App() {
               KeyS: { dx: 0, dy: p2Mirrored ? -1 : 1 },
               KeyA: { dx: p2Mirrored ? 1 : -1, dy: 0 },
               KeyD: { dx: p2Mirrored ? -1 : 1, dy: 0 },
+              ArrowUp: { dx: 0, dy: p2Mirrored ? 1 : -1 },
+              ArrowDown: { dx: 0, dy: p2Mirrored ? -1 : 1 },
+              ArrowLeft: { dx: p2Mirrored ? 1 : -1, dy: 0 },
+              ArrowRight: { dx: p2Mirrored ? -1 : 1, dy: 0 },
             };
             const p2Dir = p2ActiveKey ? p2DirMap[p2ActiveKey] : null;
             if (p2Dir) {
@@ -2202,17 +2316,25 @@ export default function App() {
           });
         }
       }
-      // P2 local co-op controls
+      // P2 local co-op controls -- only when NOT online host
       if (["KeyW", "KeyS", "KeyA", "KeyD"].includes(e.code)) {
-        p2KeyOrderRef.current = [
-          e.code,
-          ...p2KeyOrderRef.current.filter((k) => k !== e.code),
-        ];
+        if (!(isOnlineCoopRef.current && onlineRoleRef.current === "host")) {
+          p2KeyOrderRef.current = [
+            e.code,
+            ...p2KeyOrderRef.current.filter((k) => k !== e.code),
+          ];
+        }
       }
       if (e.key === "Shift") {
         e.preventDefault();
         const gs = gsRef.current;
-        if (gs && gs.status === "playing") placeP2Bomb(gs);
+        if (
+          gs &&
+          gs.status === "playing" &&
+          !(isOnlineCoopRef.current && onlineRoleRef.current === "host")
+        ) {
+          placeP2Bomb(gs);
+        }
       }
       if (
         (e.key === " " || e.key === "Enter") &&
@@ -2236,9 +2358,11 @@ export default function App() {
         }
       }
       if (["KeyW", "KeyS", "KeyA", "KeyD"].includes(e.code)) {
-        p2KeyOrderRef.current = p2KeyOrderRef.current.filter(
-          (k) => k !== e.code,
-        );
+        if (!(isOnlineCoopRef.current && onlineRoleRef.current === "host")) {
+          p2KeyOrderRef.current = p2KeyOrderRef.current.filter(
+            (k) => k !== e.code,
+          );
+        }
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -2286,7 +2410,9 @@ export default function App() {
     isOnlineCoopRef.current = false;
     onlineRoleRef.current = null;
     onlineRoomIdRef.current = "";
+    onlineGuestActiveRef.current = false;
     setOnlineDisconnected(false);
+    setP2LeftMessage("");
     setRtcConnected(false);
     setOnlineScreen("none");
     setOnlineRoomId("");
@@ -2449,12 +2575,13 @@ export default function App() {
       const joinedGridSize = roomGridSize ?? "M";
 
       mgr.onMessage = (data: string) => {
-        if (data.startsWith("START")) {
+        if (data.startsWith("START") || data.startsWith("REJOIN")) {
           cleanupOnlineIntervals();
 
           // Parse grid size from message
           const parts = data.split(":");
           const gs = parts[1] ?? joinedGridSize;
+          const isRejoin = data.startsWith("REJOIN");
           const gridSizeColsRows: Record<string, [number, number]> = {
             S: [13, 11],
             M: [17, 13],
@@ -2469,6 +2596,7 @@ export default function App() {
               // Only accept state messages (JSON objects starting with {)
               if (stateJson.startsWith("{")) {
                 latestRemoteStateRef.current = stateJson;
+                // Packet timing is updated in the tick loop when the message is consumed
               }
             } catch (_) {}
           };
@@ -2481,7 +2609,12 @@ export default function App() {
           onlineRoomIdRef.current = onlineRoomId;
 
           setOnlineScreen("none");
-          startGame(cols, rows, true);
+          if (isRejoin) {
+            // Rejoining mid-game: start with 1 life, state snapshot from host will sync soon
+            startGame(cols, rows, true);
+          } else {
+            startGame(cols, rows, true);
+          }
         } else if (data.startsWith("{")) {
           // Early state push before START acknowledgment -- store it
           latestRemoteStateRef.current = data;
@@ -2490,6 +2623,82 @@ export default function App() {
     } catch (_) {
       setOnlineError("Failed to join room. Please try again.");
     }
+  };
+
+  const handleRejoinHandshake = async () => {
+    if (!actor || !onlineRoomIdRef.current) return;
+    const roomId = onlineRoomIdRef.current;
+
+    // Create a fresh WebRTC manager for the new connection
+    const newMgr = createWebRTCManager("host");
+    newMgr.pc.onicecandidate = async (e) => {
+      if (e.candidate) {
+        try {
+          await actor.pushHostIce(roomId, JSON.stringify(e.candidate));
+        } catch (_) {}
+      }
+    };
+
+    const offerJson = await hostCreateOffer(newMgr);
+    await actor.pushOffer(roomId, offerJson);
+
+    rtcManagerRef.current = newMgr;
+    setRtcManager(newMgr);
+
+    const rejoinPoll = window.setInterval(async () => {
+      try {
+        await actor.keepAlive(roomId);
+        if (!newMgr.isConnected) {
+          const answer = await actor.getAnswer(roomId);
+          if (answer) {
+            try {
+              await hostReceiveAnswer(newMgr, answer);
+            } catch (_) {}
+          }
+        }
+        const iceCandidates = await actor.getGuestIce(roomId);
+        for (const c of iceCandidates) {
+          try {
+            await addIceCandidate(newMgr, c);
+          } catch (_) {}
+        }
+        if (newMgr.isConnected) {
+          clearInterval(rejoinPoll);
+          // Send REJOIN message with grid size
+          sendData(newMgr, `REJOIN:${onlineGridSize}`);
+          onlineGuestActiveRef.current = true;
+          setP2LeftMessage("");
+          // Rewire input handler for new guest
+          newMgr.onMessage = (data: string) => {
+            try {
+              const msg = JSON.parse(data) as {
+                type: string;
+                code?: string;
+                pressed?: boolean;
+              };
+              if (msg.type === "input" && msg.code) {
+                p2InputQueueRef.current.push({
+                  code: msg.code,
+                  pressed: msg.pressed ?? false,
+                });
+              } else if (msg.type === "bomb") {
+                p2InputQueueRef.current.push({
+                  code: "",
+                  pressed: false,
+                  bomb: true,
+                });
+              }
+            } catch (_) {}
+          };
+          newMgr.onDisconnected = () => {
+            onlineGuestActiveRef.current = false;
+            p2KeyOrderRef.current = [];
+            setP2LeftMessage("Player 2 left — waiting for new player");
+          };
+        }
+      } catch (_) {}
+    }, 1500);
+    onlineIntervalsRef.current.push(rejoinPoll);
   };
 
   const handleHostStart = async () => {
@@ -2525,7 +2734,30 @@ export default function App() {
         } catch (_) {}
       };
       mgr.onDisconnected = () => {
-        setOnlineDisconnected(true);
+        // Guest disconnected -- host game continues, P2 freezes
+        onlineGuestActiveRef.current = false;
+        p2KeyOrderRef.current = []; // stop P2 movement
+        setP2LeftMessage("Player 2 left — waiting for new player");
+        // Poll for a new guest joining (every 3s)
+        const rejoinPoll = window.setInterval(async () => {
+          if (!isOnlineCoopRef.current || !actor) {
+            clearInterval(rejoinPoll);
+            return;
+          }
+          try {
+            const rooms = await actor.listRooms();
+            const thisRoom = rooms.find(
+              (r) => r.id === onlineRoomIdRef.current,
+            );
+            const guestPresent = thisRoom && Number(thisRoom.playerCount) >= 2;
+            if (guestPresent) {
+              setP2LeftMessage("");
+              clearInterval(rejoinPoll);
+              await handleRejoinHandshake();
+            }
+          } catch (_) {}
+        }, 3000);
+        onlineIntervalsRef.current.push(rejoinPoll);
       };
 
       // Parse grid size and start game
@@ -2542,6 +2774,13 @@ export default function App() {
 
       setOnlineScreen("none");
       startGame(cols, rows, true);
+      // Immediately push the initial game state so guest gets it without waiting 100ms
+      const initialMgr = rtcManagerRef.current;
+      const initialGs = gsRef.current;
+      if (initialMgr?.isConnected && initialGs) {
+        sendData(initialMgr, serializeGameState(initialGs));
+        lastStatePushRef.current = performance.now();
+      }
     } catch (_) {
       setOnlineError("Failed to start game. Please try again.");
     }
@@ -3554,30 +3793,29 @@ export default function App() {
                             key={room.id}
                             data-ocid={`online.rooms.item.${idx + 1}`}
                             onClick={() => {
-                              if (!isFull)
-                                handleGuestJoin(
-                                  room.id,
-                                  room.roomName,
-                                  room.gridSize,
-                                );
+                              handleGuestJoin(
+                                room.id,
+                                room.roomName,
+                                room.gridSize,
+                              );
                             }}
-                            disabled={isFull}
+                            disabled={false}
                             type="button"
                             className="flex items-center justify-between p-3 rounded-sm text-left transition-all"
                             style={{
                               background: isFull
-                                ? "rgba(80,80,80,0.08)"
+                                ? "rgba(255,160,50,0.08)"
                                 : "rgba(80,160,255,0.08)",
-                              border: `1px solid ${isFull ? "rgba(80,80,80,0.2)" : "rgba(80,160,255,0.25)"}`,
-                              cursor: isFull ? "not-allowed" : "pointer",
-                              opacity: isFull ? 0.6 : 1,
+                              border: `1px solid ${isFull ? "rgba(255,160,50,0.3)" : "rgba(80,160,255,0.25)"}`,
+                              cursor: "pointer",
+                              opacity: 1,
                             }}
                           >
                             <div className="flex flex-col gap-0.5">
                               <span
                                 className="font-mono font-bold text-sm"
                                 style={{
-                                  color: isFull ? "#808080" : "#80c0ff",
+                                  color: isFull ? "#ffa030" : "#80c0ff",
                                 }}
                               >
                                 {room.roomName}
@@ -3595,14 +3833,14 @@ export default function App() {
                                 className="font-mono text-xs font-bold px-2 py-1 rounded-full"
                                 style={{
                                   background: isFull
-                                    ? "rgba(255,100,100,0.12)"
+                                    ? "rgba(255,160,50,0.15)"
                                     : "rgba(80,255,80,0.1)",
-                                  color: isFull ? "#ff8080" : "#80ff80",
-                                  border: `1px solid ${isFull ? "rgba(255,100,100,0.3)" : "rgba(80,255,80,0.3)"}`,
+                                  color: isFull ? "#ffa030" : "#80ff80",
+                                  border: `1px solid ${isFull ? "rgba(255,160,50,0.4)" : "rgba(80,255,80,0.3)"}`,
                                 }}
                               >
                                 {Number(room.playerCount)}/2{" "}
-                                {isFull ? "FULL" : ""}
+                                {isFull ? "IN GAME" : ""}
                               </span>
                             </div>
                           </button>
@@ -4301,7 +4539,31 @@ export default function App() {
           </div>
         )}
 
-        {onlineDisconnected && (
+        {p2LeftMessage &&
+          isOnlineCoopRef.current &&
+          onlineRoleRef.current === "host" && (
+            <div
+              style={{
+                position: "absolute",
+                top: 8,
+                left: "50%",
+                transform: "translateX(-50%)",
+                background: "rgba(0,0,0,0.8)",
+                border: "1px solid #ff8040",
+                color: "#ff8040",
+                padding: "6px 16px",
+                borderRadius: 6,
+                fontFamily: "monospace",
+                fontSize: 12,
+                zIndex: 40,
+                pointerEvents: "none",
+              }}
+            >
+              {p2LeftMessage}
+            </div>
+          )}
+
+        {onlineDisconnected && onlineRoleRef.current === "guest" && (
           <div
             data-ocid="online.disconnected.modal"
             className="absolute inset-0 flex flex-col items-center justify-center gap-6 z-50"
@@ -4319,11 +4581,8 @@ export default function App() {
             </p>
             <Button
               data-ocid="online.disconnected.return.button"
-              onClick={() => {
-                setOnlineDisconnected(false);
-                isOnlineCoopRef.current = false;
-                onlineRoleRef.current = null;
-                rtcManagerRef.current = null;
+              onClick={async () => {
+                await cleanupOnline();
                 setScreen("picker");
               }}
               className="font-mono font-bold tracking-widest uppercase px-10 py-3 border"
