@@ -448,6 +448,8 @@ export default function App() {
           setFinalScore(latestGs.score);
         } else if (latestGs.status === "levelcomplete") {
           setGameStatus("levelcomplete");
+        } else if (latestGs.status === "playing") {
+          setGameStatus("playing");
         }
         return;
       }
@@ -2217,7 +2219,7 @@ export default function App() {
           }
         }
         const mgr = rtcManagerRef.current;
-        if (mgr?.isConnected && now - lastStatePushRef.current > 100) {
+        if (mgr?.isConnected && now - lastStatePushRef.current > 33) {
           lastStatePushRef.current = now;
           const stateJson = serializeGameState(gs);
           sendData(mgr, stateJson);
@@ -2396,7 +2398,7 @@ export default function App() {
 
   const cleanupOnline = async (roomId?: string) => {
     cleanupOnlineIntervals();
-    const rid = roomId ?? onlineRoomId;
+    const rid = roomId ?? onlineRoomIdRef.current;
     if (rid && actor) {
       try {
         await actor.leaveRoom(rid);
@@ -2444,6 +2446,7 @@ export default function App() {
         gridSizeMap[onlineGridSize],
       );
       setOnlineRoomId(roomId);
+      onlineRoomIdRef.current = roomId;
       setOnlineRoomNameDisplay(onlineRoomName.trim());
 
       // Create WebRTC manager as host
@@ -2520,6 +2523,7 @@ export default function App() {
         return;
       }
       setOnlineRoomId(roomId);
+      onlineRoomIdRef.current = roomId;
       setOnlineRoomNameDisplay(roomName);
 
       // Create WebRTC manager as guest
@@ -4463,18 +4467,27 @@ export default function App() {
             >
               LEVEL {level} CLEAR!
             </p>
-            <Button
-              data-ocid="game.continue.button"
-              onClick={advanceLevel}
-              className="font-mono font-bold tracking-widest uppercase px-10 py-3 border"
-              style={{
-                background: "transparent",
-                borderColor: theme.uiAccent,
-                color: theme.uiAccent,
-              }}
-            >
-              ▶ NEXT LEVEL
-            </Button>
+            {isOnlineCoopRef.current && onlineRoleRef.current === "guest" ? (
+              <p
+                className="font-mono text-sm tracking-widest"
+                style={{ color: theme.uiAccent, opacity: 0.7 }}
+              >
+                ⏳ Waiting for host...
+              </p>
+            ) : (
+              <Button
+                data-ocid="game.continue.button"
+                onClick={advanceLevel}
+                className="font-mono font-bold tracking-widest uppercase px-10 py-3 border"
+                style={{
+                  background: "transparent",
+                  borderColor: theme.uiAccent,
+                  color: theme.uiAccent,
+                }}
+              >
+                ▶ NEXT LEVEL
+              </Button>
+            )}
           </div>
         )}
 
