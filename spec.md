@@ -1,30 +1,33 @@
 # Bomberman Game
 
 ## Current State
-Online co-op is implemented via WebRTC DataChannel. Host runs the game simulation and pushes full game state to guest at ~10Hz. Guest is a pure renderer -- it applies received state directly and does client-side interpolation for px/py positions. Three bugs are active:
 
-1. Guest movement is laggy (~200ms+ felt latency) because state only pushes at 10Hz and guest inputs travel: keyboard → sendData → host receives → processes → pushes back state → guest sees result (2+ round-trips)
-2. Guest gets stuck on old level because `setGameStatus('playing')` is never called in the guest tick block when the host's state transitions back to `status: "playing"` after a level advance
-3. After a guest quits and tries to rejoin, the room is not visible because `cleanupOnline()` uses the React state `onlineRoomId` (possibly stale) instead of the ref `onlineRoomIdRef.current`, so `leaveRoom` gets an empty string and never clears `guestPrincipal` on the backend -- so `listRooms` keeps hiding that room
+A browser-based Bomberman game with single-player, local co-op (P1: Arrows+RCtrl, P2: WASD+Shift), and online co-op (WebRTC, host/guest). Three active bugs reported.
 
 ## Requested Changes (Diff)
 
 ### Add
-- Auto-refresh rooms list when user navigates to the join screen (after returning from a session)
+- `p2TeleportFlashUntil: number` field to `GameState` (types.ts) alongside existing `teleportFlashUntil`
+- A "Back to Lobby" button on the gameover screen when online co-op is active and the time ran out (timed level)
 
 ### Modify
-- Increase host state push rate from every 100ms to every 33ms (~30Hz) for smoother guest rendering
-- Fix guest tick block to call `setGameStatus('playing')` when the received state `status` is `"playing"` (fixes stuck level overlay)
-- Fix `cleanupOnline()` to use `onlineRoomIdRef.current` instead of the React state `onlineRoomId` so the `leaveRoom` backend call always uses the correct room ID
-- Also call `leaveRoomAsGuest` (not the legacy `leaveRoom`) from the guest path so the backend correctly clears `guestPrincipal` and the room reappears in `listRooms`
-- Fix `onlineRoomIdRef` assignment -- currently it is set to the state variable `onlineRoomId` but should be set to the actual `roomId` parameter immediately in `handleGuestJoin` and `handleHostCreate` so the ref is always current
+- **Portal flash bug (Bug 1)**: `teleportFlashUntil` is a single value on `GameState`. When P1 teleports via portal bomb, it triggers a full-screen pink flash on P2's canvas too. Fix: split into two separate fields `teleportFlashUntil` (P1 only) and `p2TeleportFlashUntil` (P2 only). In `App.tsx`, set `gs.teleportFlashUntil` only when P1 teleports and set `gs.p2TeleportFlashUntil` only when P2 teleports. In `renderer.ts`, move the full-screen flash to fire only when `teleportFlashUntil` is active (P1's flash), and add a separate localized flash (or omit P2 flash entirely since it happens on P1's screen). For local co-op this means P2 teleporting should NOT cause a full-screen pink overlay on the shared canvas - only P1's teleport causes the flash.
+- **P2 bomb animation bug (Bug 2)**: In `drawBomb()` in `renderer.ts`, the fuse progress is calculated as `(now - bomb.placedAt) / bomb.fuseMs`. For the online co-op guest, `bomb.placedAt` is a `performance.now()` timestamp from the host machine and `now` is the guest's local `performance.now()`. These clocks are not synchronized, so the fuse animation looks wrong/different for the guest. Fix: when serializing game state, add a `serverTime: performance.now()` field to the packet. When the guest deserializes, compute a `clockOffset = guestNow - serverTime` and store it on the deserialized gs as `hostClockOffset`. In `renderer.ts`, when calculating fuse for drawBomb, use `(now - hostClockOffset - bomb.placedAt) / bomb.fuseMs` to compensate. For local co-op mode (non-online), `hostClockOffset` is 0 so it works unchanged.
+- **Gameover back button (Bug 3)**: In the gameover screen overlay in `App.tsx` (around line 4494), when `isOnlineCoopRef.current === true`, add a "Back to Lobby" button that calls `cleanupOnline()` then sets screen back to the online coop join screen (specifically back to the "join" tab showing available rooms). The MENU button currently goes to `setScreen("picker")` which is fine for single-player, but online coop guests need to return to the lobby.
+- In `levelInit.ts`, initialize `p2TeleportFlashUntil: 0` alongside `teleportFlashUntil: 0`
 
 ### Remove
 - Nothing removed
 
 ## Implementation Plan
-1. In the host's game tick, change `100` to `33` in the `lastStatePushRef.current > 100` check so state pushes at ~30Hz
-2. In the guest tick block (around lines 446–451), add `else if (latestGs.status === 'playing') { setGameStatus('playing'); }` so the level-complete overlay clears when the host advances
-3. In `cleanupOnline()`, replace `rid = roomId ?? onlineRoomId` with `rid = roomId ?? onlineRoomIdRef.current` and ensure the guest path calls the specific guest leave function
-4. In `handleGuestJoin` and wherever `onlineRoomId` state is set, also immediately assign `onlineRoomIdRef.current = roomId` so the ref is always current
-5. When the user opens the join screen (navigates to `onlineScreen === 'join'`), trigger `loadOnlineRooms()` automatically
+
+1. **types.ts**: Add `p2TeleportFlashUntil: number` and `hostClockOffset?: number` to `GameState` interface
+2. **levelInit.ts**: Initialize both `teleportFlashUntil: 0` and `p2TeleportFlashUntil: 0` and `hostClockOffset: 0`
+3. **App.tsx (portal flash fix)**: 
+   - All places that set `gs.teleportFlashUntil = now + 300` when P1 teleports → keep as is
+   - All places that set `gs.teleportFlashUntil = now + 300` when P2 teleports → change to `gs.p2TeleportFlashUntil = now + 300`
+   - P2 teleport logic is around lines 1271 and 1293 in App.tsx
+4. **renderer.ts (portal flash fix)**: The existing full-screen flash block (`if (now < gs.teleportFlashUntil)`) stays for P1. Remove P2 flash OR make it localized to P2's position rather than full-screen.
+5. **webrtcManager or App.tsx (clock offset fix)**: When host pushes state via `serializeGameState`, inject `hostClockOffset: 0` (host's offset is 0). Actually, in App.tsx where host sends state: add `gs.hostClockOffset = 0` before serializing. When guest receives: deserialize, then compute `gs.hostClockOffset = now - (parsed packet's serverNow)`. Add `serverNow: performance.now()` to the serialized packet metadata.
+   - Simpler approach: In `App.tsx` host send loop, set `gs.hostSentAt = performance.now()` before serializing. On guest receive, set `gsRef.current.hostClockOffset = now - gs.hostSentAt`. Then in `drawBomb`, use `(now - (gs.hostClockOffset ?? 0) - bomb.placedAt)` for fuse calc.
+6. **App.tsx (gameover back button)**: In the gameover screen JSX, add a conditional "Back to Lobby" button when `isOnlineCoopRef.current === true` that calls cleanup and navigates back to online coop lobby screen

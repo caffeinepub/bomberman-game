@@ -261,6 +261,8 @@ export interface GameState {
   shrinkCount: number;
   cursedBombActive: boolean;
   teleportFlashUntil: number;
+  p2TeleportFlashUntil: number;
+  hostClockOffset: number;
   // Portal bomb teleport portals
   teleportPortals: TeleportPortal[];
   teleportPortalIdCounter: number;

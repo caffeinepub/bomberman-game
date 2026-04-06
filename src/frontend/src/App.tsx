@@ -329,7 +329,14 @@ export default function App() {
         if (latestRemoteStateRef.current) {
           const packetJson = latestRemoteStateRef.current;
           latestRemoteStateRef.current = null;
-          const newGs = deserializeGameState(packetJson);
+          const rawParsed = JSON.parse(packetJson);
+          const hostSentAt = rawParsed._hostSentAt as number | undefined;
+          rawParsed._hostSentAt = undefined;
+          const newGs = deserializeGameState(JSON.stringify(rawParsed));
+          // Compute clock offset so guest can sync bomb fuse animations
+          if (hostSentAt !== undefined) {
+            newGs.hostClockOffset = now - hostSentAt;
+          }
           // Store previous state for interpolation
           prevRemoteStateRef.current = gsRef.current;
           gsRef.current = newGs;
@@ -1268,7 +1275,7 @@ export default function App() {
                     p2.fromPx = cp2t.x;
                     p2.fromPy = cp2t.y;
                     p2.moving = false;
-                    gs.teleportFlashUntil = now + 300;
+                    gs.p2TeleportFlashUntil = now + 300;
                   }
                 }
               }
@@ -1290,7 +1297,7 @@ export default function App() {
                     p2.fromPx = cp2p.x;
                     p2.fromPy = cp2p.y;
                     p2.moving = false;
-                    gs.teleportFlashUntil = now + 300;
+                    gs.p2TeleportFlashUntil = now + 300;
                   }
                 }
               }
@@ -2221,8 +2228,12 @@ export default function App() {
         const mgr = rtcManagerRef.current;
         if (mgr?.isConnected && now - lastStatePushRef.current > 33) {
           lastStatePushRef.current = now;
+          gs.hostClockOffset = 0; // will be computed by guest
           const stateJson = serializeGameState(gs);
-          sendData(mgr, stateJson);
+          // Embed host timestamp so guest can compute clock offset
+          const packet = JSON.parse(stateJson);
+          packet._hostSentAt = now;
+          sendData(mgr, JSON.stringify(packet));
         }
       }
 
@@ -4548,6 +4559,27 @@ export default function App() {
               >
                 ◄ MENU
               </Button>
+              {isOnlineCoopRef.current && (
+                <Button
+                  data-ocid="game.back.to.lobby.button"
+                  onClick={async () => {
+                    await cleanupOnline();
+                    // After cleanup, show the join list on the picker screen
+                    setScreen("picker");
+                    setOnlineScreen("joinList");
+                    // Load fresh room list
+                    setTimeout(() => loadOnlineRooms(), 100);
+                  }}
+                  className="font-mono font-bold tracking-widest uppercase px-8 py-3 border"
+                  style={{
+                    background: "transparent",
+                    borderColor: "#4488cc",
+                    color: "#88ccff",
+                  }}
+                >
+                  ⬤ JOIN NEW ROOM
+                </Button>
+              )}
             </div>
           </div>
         )}

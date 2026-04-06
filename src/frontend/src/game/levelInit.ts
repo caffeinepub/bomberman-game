@@ -316,6 +316,8 @@ export function initLevel(
     shrinkCount: 0,
     cursedBombActive: levelModifier === "cursedBomb",
     teleportFlashUntil: 0,
+    p2TeleportFlashUntil: 0,
+    hostClockOffset: 0,
     teleportPortals: [],
     teleportPortalIdCounter: 0,
     // Teleport pads

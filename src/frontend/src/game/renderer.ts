@@ -308,7 +308,7 @@ export function drawGame(
   }
 
   // Bombs
-  for (const bomb of bombs) drawBomb(ctx, bomb, now);
+  for (const bomb of bombs) drawBomb(ctx, bomb, now, gs.hostClockOffset ?? 0);
 
   // Projectiles
   for (const proj of projectiles) {
@@ -362,7 +362,7 @@ export function drawGame(
     }
   }
 
-  // Teleport flash
+  // Teleport flash - P1 only (full screen)
   if (now < gs.teleportFlashUntil) {
     const alpha = Math.max(
       0,
@@ -370,6 +370,24 @@ export function drawGame(
     );
     ctx.fillStyle = `rgba(200,100,255,${alpha})`;
     ctx.fillRect(0, 0, W, H);
+  }
+
+  // Teleport flash - P2 only (localized circle around P2 position, not full screen)
+  if (gs.p2TeleportFlashUntil && now < gs.p2TeleportFlashUntil && gs.player2) {
+    const alpha = Math.max(
+      0,
+      0.7 * (1 - (now - (gs.p2TeleportFlashUntil - 300)) / 300),
+    );
+    const p2cx = gs.player2.px;
+    const p2cy = gs.player2.py;
+    const flashR = TILE * 2;
+    const grd = ctx.createRadialGradient(p2cx, p2cy, 0, p2cx, p2cy, flashR);
+    grd.addColorStop(0, `rgba(100,200,255,${alpha})`);
+    grd.addColorStop(1, "rgba(100,200,255,0)");
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(p2cx, p2cy, flashR, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   // Shrinking arena warning (flash red border when imminent)
@@ -715,10 +733,16 @@ function drawPowerUp(ctx: CanvasRenderingContext2D, pu: PowerUp, now: number) {
 }
 
 // ─── Bomb ─────────────────────────────────────────────────────────────────────────────
-function drawBomb(ctx: CanvasRenderingContext2D, bomb: Bomb, now: number) {
+function drawBomb(
+  ctx: CanvasRenderingContext2D,
+  bomb: Bomb,
+  now: number,
+  clockOffset = 0,
+) {
   const cx = bomb.tx * TILE + TILE / 2;
   const cy = bomb.ty * TILE + TILE / 2;
-  const fuse = (now - bomb.placedAt) / (bomb.fuseMs ?? BOMB_FUSE);
+  const adjustedNow = now - clockOffset;
+  const fuse = (adjustedNow - bomb.placedAt) / (bomb.fuseMs ?? BOMB_FUSE);
   const pulse = 1 + Math.sin(now / 150) * 0.06 * (1 + fuse);
   const r = TILE * 0.32 * pulse;
 
@@ -787,7 +811,7 @@ function drawBomb(ctx: CanvasRenderingContext2D, bomb: Bomb, now: number) {
   ctx.arc(cx - r * 0.3, cy - r * 0.3, r * 0.3, 0, Math.PI * 2);
   ctx.fill();
 
-  const fuseFlicker = Math.sin(now / 60) > 0;
+  const fuseFlicker = Math.sin(adjustedNow / 60) > 0;
   ctx.strokeStyle = fuseFlicker ? "#ffdd44" : "#ccaa22";
   ctx.lineWidth = 2.5;
   ctx.beginPath();
