@@ -105,6 +105,34 @@ export default function App() {
   const lastPacketTimeRef = useRef<number>(0);
   const currentPacketTimeRef = useRef<number>(0);
   const [p2LeftMessage, setP2LeftMessage] = useState("");
+  // Guest client-side prediction: local P2 position that updates immediately
+  const guestLocalPlayerRef = useRef<{
+    tx: number;
+    ty: number;
+    px: number;
+    py: number;
+    fromPx: number;
+    fromPy: number;
+    moving: boolean;
+    moveProgress: number;
+    lives: number;
+  } | null>(null);
+  const guestLocalKeyOrderRef = useRef<string[]>([]);
+  // Local pending bombs: shown immediately before host confirms them
+  const guestPendingBombsRef = useRef<
+    {
+      id: number;
+      tx: number;
+      ty: number;
+      placedAt: number;
+      range: number;
+      fuseMs: number;
+      bombType: BombType;
+      hasDrifted: boolean;
+    }[]
+  >([]);
+  const guestPendingBombIdRef = useRef(-10000);
+  const guestPrevFrameRef = useRef(0);
   const [displayScore, setDisplayScore] = useState(0);
   const [displayLives, setDisplayLives] = useState(3);
   const [displayLevel, setDisplayLevel] = useState(1);
@@ -150,6 +178,15 @@ export default function App() {
     const gs = initLevel(cols, rows, 1, undefined, mp);
     gsRef.current = gs;
     p2KeyOrderRef.current = [];
+    // Reset guest prediction state on each new game
+    guestLocalPlayerRef.current = null;
+    guestLocalKeyOrderRef.current = [];
+    guestPendingBombsRef.current = [];
+    guestPrevFrameRef.current = 0;
+    hasReceivedFirstPacketRef.current = false;
+    prevRemoteStateRef.current = null;
+    lastPacketTimeRef.current = 0;
+    currentPacketTimeRef.current = 0;
     setGameCols(cols);
     setGameRows(rows);
     setScreen("game");
@@ -336,8 +373,7 @@ export default function App() {
           // Compute clock offset so guest can sync bomb fuse animations
           if (hostSentAt !== undefined) {
             newGs.hostClockOffset = now - hostSentAt;
-            // BUG 2 FIX: Shift all timestamp fields from host clock to guest clock
-            // so renderer (which uses local `now`) sees correct ages.
+            // Shift all timestamp fields from host clock to guest clock
             const offset = newGs.hostClockOffset;
             for (const exp of newGs.explosions) {
               exp.startedAt += offset;
@@ -352,7 +388,66 @@ export default function App() {
               b.placedAt += offset;
             }
           }
-          // Store previous state for interpolation
+
+          // ── Fix 1: Game-over sync ────────────────────────────────────────
+          // Capture game-over state immediately when host sends it, so even if
+          // host stops sending after this packet the guest has the correct status.
+          if (newGs.status === "gameover") {
+            setGameStatus("gameover");
+            setFinalScore(newGs.score);
+          } else if (newGs.status === "levelcomplete") {
+            setGameStatus("levelcomplete");
+          } else if (newGs.status === "playing") {
+            setGameStatus("playing");
+          }
+
+          // ── Fix 2: Client-side prediction reconciliation ─────────────────
+          // If the host's authoritative P2 state diverges significantly from our
+          // local prediction (e.g. died, teleported, level changed), snap to host.
+          const hostP2 = newGs.player2;
+          const localP2 = guestLocalPlayerRef.current;
+          if (hostP2 && localP2) {
+            const tilesDiff =
+              Math.abs(hostP2.tx - localP2.tx) +
+              Math.abs(hostP2.ty - localP2.ty);
+            // Level changed or position diverged too far: snap to host
+            if (tilesDiff > 2 || !hostP2.alive) {
+              guestLocalPlayerRef.current = {
+                tx: hostP2.tx,
+                ty: hostP2.ty,
+                px: hostP2.px,
+                py: hostP2.py,
+                fromPx: hostP2.fromPx,
+                fromPy: hostP2.fromPy,
+                moving: hostP2.moving,
+                moveProgress: hostP2.moveProgress,
+                lives: hostP2.lives,
+              };
+            } else {
+              // Keep local position but sync lives (so death is reflected)
+              localP2.lives = hostP2.lives;
+            }
+            // Clean up pending bombs that the host has now confirmed
+            guestPendingBombsRef.current = guestPendingBombsRef.current.filter(
+              (pb) =>
+                !newGs.bombs.some((hb) => hb.tx === pb.tx && hb.ty === pb.ty),
+            );
+          } else if (hostP2 && !localP2) {
+            // Initialize local player from first host snapshot
+            guestLocalPlayerRef.current = {
+              tx: hostP2.tx,
+              ty: hostP2.ty,
+              px: hostP2.px,
+              py: hostP2.py,
+              fromPx: hostP2.fromPx,
+              fromPy: hostP2.fromPy,
+              moving: hostP2.moving,
+              moveProgress: hostP2.moveProgress,
+              lives: hostP2.lives,
+            };
+          }
+
+          // Store previous state for interpolation of OTHER entities
           prevRemoteStateRef.current = gsRef.current;
           gsRef.current = newGs;
           // Track packet arrival times for interpolation
@@ -361,7 +456,7 @@ export default function App() {
           hasReceivedFirstPacketRef.current = true;
         }
 
-        // Bug 2 fix: don't render until the first real packet arrives
+        // Don't render until the first real packet arrives
         if (!hasReceivedFirstPacketRef.current) {
           const canvas = canvasRef.current;
           if (canvas) {
@@ -385,8 +480,94 @@ export default function App() {
 
         const latestGs = gsRef.current!;
 
-        // Bug 3 fix: client-side position interpolation so guest runs at 60fps
-        // even though state only arrives at ~10Hz
+        // ── Fix 2: Advance local guest position each frame (60fps, instant) ──
+        const localP2 = guestLocalPlayerRef.current;
+        if (localP2 && latestGs.player2?.alive) {
+          const dt2 =
+            guestPrevFrameRef.current === 0
+              ? 0
+              : Math.min((now - guestPrevFrameRef.current) / 1000, 0.1);
+          guestPrevFrameRef.current = now;
+          const hostP2ForSpeed = latestGs.player2;
+          const p2OnIce = latestGs.icePatches.some(
+            (ip) => ip.tx === localP2.tx && ip.ty === localP2.ty,
+          );
+          const p2OnSticky = latestGs.stickyTiles.some(
+            (st) => st.tx === localP2.tx && st.ty === localP2.ty,
+          );
+          const localSpeed =
+            4 *
+            hostP2ForSpeed.speedMultiplier *
+            (p2OnIce ? 0.1 : 1) *
+            (p2OnSticky ? 0.3 : 1);
+
+          if (localP2.moving) {
+            localP2.moveProgress += dt2 * localSpeed;
+            if (localP2.moveProgress >= 1) {
+              localP2.moveProgress = 1;
+              const tc = tileCenter(localP2.tx, localP2.ty);
+              localP2.px = tc.x;
+              localP2.py = tc.y;
+              localP2.moving = false;
+            } else {
+              const tc = tileCenter(localP2.tx, localP2.ty);
+              localP2.px =
+                localP2.fromPx + (tc.x - localP2.fromPx) * localP2.moveProgress;
+              localP2.py =
+                localP2.fromPy + (tc.y - localP2.fromPy) * localP2.moveProgress;
+            }
+          }
+
+          if (!localP2.moving) {
+            const p2Mirrored = now < (hostP2ForSpeed.mirrorUntil ?? 0);
+            const p2DirMap: Record<string, { dx: number; dy: number }> = {
+              ArrowUp: { dx: 0, dy: p2Mirrored ? 1 : -1 },
+              ArrowDown: { dx: 0, dy: p2Mirrored ? -1 : 1 },
+              ArrowLeft: { dx: p2Mirrored ? 1 : -1, dy: 0 },
+              ArrowRight: { dx: p2Mirrored ? -1 : 1, dy: 0 },
+            };
+            // Pick most recently pressed direction key
+            let activeDir: { dx: number; dy: number } | null = null;
+            for (const k of guestLocalKeyOrderRef.current) {
+              if (p2DirMap[k]) {
+                activeDir = p2DirMap[k];
+                break;
+              }
+            }
+            if (activeDir) {
+              const ntx = localP2.tx + activeDir.dx;
+              const nty = localP2.ty + activeDir.dy;
+              // Use the host's latest grid for walkability (so guest doesn't walk through walls)
+              if (
+                isWalkable(
+                  latestGs.map,
+                  latestGs.cols,
+                  latestGs.rows,
+                  ntx,
+                  nty,
+                ) &&
+                !latestGs.bombs.some((b) => b.tx === ntx && b.ty === nty) &&
+                !guestPendingBombsRef.current.some(
+                  (b) => b.tx === ntx && b.ty === nty,
+                )
+              ) {
+                localP2.fromPx = localP2.px;
+                localP2.fromPy = localP2.py;
+                localP2.tx = ntx;
+                localP2.ty = nty;
+                localP2.moving = true;
+                localP2.moveProgress = 0;
+              }
+            }
+          }
+        }
+
+        // ── Remove expired pending bombs (host didn't confirm within 2s) ────
+        guestPendingBombsRef.current = guestPendingBombsRef.current.filter(
+          (pb) => now - pb.placedAt < 2000,
+        );
+
+        // Interpolate P1 (host player) and enemies for smooth 60fps rendering
         const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
         let renderGs = latestGs;
         const prev = prevRemoteStateRef.current;
@@ -396,20 +577,11 @@ export default function App() {
           const elapsed = now - currentPacketTimeRef.current;
           const t = Math.min(elapsed / packetInterval, 1);
           if (t < 1) {
-            // Build a shallow-cloned render state with interpolated pixel positions
             const interpPlayer = {
               ...latestGs.player,
               px: lerp(prev.player.px, latestGs.player.px, t),
               py: lerp(prev.player.py, latestGs.player.py, t),
             };
-            let interpPlayer2 = latestGs.player2;
-            if (latestGs.player2 && prev.player2) {
-              interpPlayer2 = {
-                ...latestGs.player2,
-                px: lerp(prev.player2.px, latestGs.player2.px, t),
-                py: lerp(prev.player2.py, latestGs.player2.py, t),
-              };
-            }
             const interpEnemies = latestGs.enemies.map((enemy) => {
               const prevEnemy = prev.enemies.find((e) => e.id === enemy.id);
               if (!prevEnemy) return enemy;
@@ -419,13 +591,45 @@ export default function App() {
                 py: lerp(prevEnemy.py, enemy.py, t),
               };
             });
+            // Use local prediction for P2 (instant movement), not interpolated host position
+            const localSnap = guestLocalPlayerRef.current;
+            const guestP2Render =
+              localSnap && latestGs.player2
+                ? {
+                    ...latestGs.player2,
+                    px: localSnap.px,
+                    py: localSnap.py,
+                    tx: localSnap.tx,
+                    ty: localSnap.ty,
+                    moving: localSnap.moving,
+                    moveProgress: localSnap.moveProgress,
+                  }
+                : latestGs.player2;
             renderGs = {
               ...latestGs,
               player: interpPlayer,
-              player2: interpPlayer2,
+              player2: guestP2Render,
               enemies: interpEnemies,
+              // Merge in pending bombs for local preview
+              bombs: [...latestGs.bombs, ...guestPendingBombsRef.current],
             };
           }
+        } else if (guestLocalPlayerRef.current && latestGs.player2) {
+          // No interpolation yet but still use local P2 position
+          const localSnap = guestLocalPlayerRef.current;
+          renderGs = {
+            ...latestGs,
+            player2: {
+              ...latestGs.player2,
+              px: localSnap.px,
+              py: localSnap.py,
+              tx: localSnap.tx,
+              ty: localSnap.ty,
+              moving: localSnap.moving,
+              moveProgress: localSnap.moveProgress,
+            },
+            bombs: [...latestGs.bombs, ...guestPendingBombsRef.current],
+          };
         }
 
         const canvas = canvasRef.current;
@@ -434,8 +638,8 @@ export default function App() {
         if (!ctx) return;
         drawGame(ctx, renderGs, now);
 
-        // Bug 1 fix: sync ALL HUD display state from the remote game state
-        // P1 (host) = renderGs.player, P2 (guest) = renderGs.player2
+        // Sync HUD display state from the remote game state
+        // Guest is P2 (player2), host is P1 (player)
         const p1 = latestGs.player;
         const p2g = latestGs.player2;
         setDisplayScore(latestGs.score);
@@ -465,13 +669,11 @@ export default function App() {
         setDisplayIsMultiplayer(true);
         setDisplayTimer(latestGs.timerMs);
 
+        // Status is already set above when packet arrives; just handle edge case
+        // where we reach gameover status from cached state (host stopped sending)
         if (latestGs.status === "gameover") {
           setGameStatus("gameover");
           setFinalScore(latestGs.score);
-        } else if (latestGs.status === "levelcomplete") {
-          setGameStatus("levelcomplete");
-        } else if (latestGs.status === "playing") {
-          setGameStatus("playing");
         }
         return;
       }
@@ -2280,7 +2482,11 @@ export default function App() {
       // Last-key-wins: keep keyOrder with most recent key at front
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
         if (isOnlineCoopRef.current && onlineRoleRef.current === "guest") {
-          // Guest: send movement input to host via DataChannel instead
+          // Guest: update local key order for client-side prediction AND send to host
+          guestLocalKeyOrderRef.current = [
+            e.key,
+            ...guestLocalKeyOrderRef.current.filter((k) => k !== e.key),
+          ];
           const mgr = rtcManagerRef.current;
           if (mgr)
             sendData(
@@ -2308,10 +2514,53 @@ export default function App() {
         e.preventDefault();
       }
       if (e.key === " " || (e.key === "Control" && e.location === 2)) {
-        // Online guest: send bomb event to host
+        // Online guest: send bomb event to host + show local pending bomb
         if (isOnlineCoopRef.current && onlineRoleRef.current === "guest") {
           const mgr = rtcManagerRef.current;
           if (mgr) sendData(mgr, JSON.stringify({ type: "bomb" }));
+          // Client-side prediction: immediately show bomb at local P2 position
+          const localP2 = guestLocalPlayerRef.current;
+          const latestGs = gsRef.current;
+          if (localP2 && latestGs?.player2?.alive) {
+            const p2 = latestGs.player2;
+            const alreadyHasBomb =
+              latestGs.bombs.some(
+                (b) => b.tx === localP2.tx && b.ty === localP2.ty,
+              ) ||
+              guestPendingBombsRef.current.some(
+                (b) => b.tx === localP2.tx && b.ty === localP2.ty,
+              );
+            const pendingCount =
+              guestPendingBombsRef.current.length +
+              latestGs.bombs.filter((b) => b.placedByP2).length;
+            if (!alreadyHasBomb && pendingCount < p2.maxBombs) {
+              const bombType: BombType =
+                p2.bombType === "surprise"
+                  ? (
+                      [
+                        "normal",
+                        "lava",
+                        "freeze",
+                        "kick",
+                        "portal",
+                      ] as BombType[]
+                    )[Math.floor(Math.random() * 5)]
+                  : p2.bombType;
+              guestPendingBombsRef.current.push({
+                id: guestPendingBombIdRef.current--,
+                tx: localP2.tx,
+                ty: localP2.ty,
+                placedAt: performance.now(),
+                range: p2.explosionRange,
+                fuseMs: Math.max(
+                  1000,
+                  Math.min(4000, 2000 - p2.bombFuseLevel * 500),
+                ),
+                bombType,
+                hasDrifted: false,
+              });
+            }
+          }
           return;
         }
         const gs = gsRef.current;
@@ -2375,6 +2624,10 @@ export default function App() {
       keysRef.current.delete(e.key);
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
         if (isOnlineCoopRef.current && onlineRoleRef.current === "guest") {
+          // Guest: update local key order AND send to host
+          guestLocalKeyOrderRef.current = guestLocalKeyOrderRef.current.filter(
+            (k) => k !== e.key,
+          );
           const mgr = rtcManagerRef.current;
           if (mgr)
             sendData(
