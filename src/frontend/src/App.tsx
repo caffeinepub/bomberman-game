@@ -1,8 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useActor } from "@/hooks/useActor";
+import { useActor } from "@caffeineai/core-infrastructure";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RoomInfo } from "./backend";
+import { type RoomInfo, createActor } from "./backend";
 import { deserializeGameState, serializeGameState } from "./game/serializer";
 import {
   addIceCandidate,
@@ -44,7 +44,7 @@ export default function App() {
   const keysRef = useRef<Set<string>>(new Set());
   const keyOrderRef = useRef<string[]>([]);
   const rafRef = useRef<number>(0);
-  const { actor } = useActor();
+  const { actor } = useActor(createActor);
 
   // ─── Co-op state ──────────────────────────────────────────────────────────
   const [displayLivesP2, setDisplayLivesP2] = useState(3);
@@ -336,6 +336,21 @@ export default function App() {
           // Compute clock offset so guest can sync bomb fuse animations
           if (hostSentAt !== undefined) {
             newGs.hostClockOffset = now - hostSentAt;
+            // BUG 2 FIX: Shift all timestamp fields from host clock to guest clock
+            // so renderer (which uses local `now`) sees correct ages.
+            const offset = newGs.hostClockOffset;
+            for (const exp of newGs.explosions) {
+              exp.startedAt += offset;
+            }
+            for (const lf of newGs.lavaFires) {
+              lf.spawnedAt += offset;
+            }
+            for (const ip of newGs.icePatches) {
+              ip.spawnedAt += offset;
+            }
+            for (const b of newGs.bombs) {
+              b.placedAt += offset;
+            }
           }
           // Store previous state for interpolation
           prevRemoteStateRef.current = gsRef.current;
@@ -4608,39 +4623,41 @@ export default function App() {
             </div>
           )}
 
-        {onlineDisconnected && onlineRoleRef.current === "guest" && (
-          <div
-            data-ocid="online.disconnected.modal"
-            className="absolute inset-0 flex flex-col items-center justify-center gap-6 z-50"
-            style={{ background: "rgba(0,0,0,0.93)" }}
-          >
-            <div className="text-5xl">📡</div>
-            <p
-              className="font-display text-3xl font-black tracking-widest uppercase"
-              style={{ color: "#ff6080", textShadow: "0 0 20px #ff6080" }}
+        {onlineDisconnected &&
+          onlineRoleRef.current === "guest" &&
+          gameStatus !== "gameover" && (
+            <div
+              data-ocid="online.disconnected.modal"
+              className="absolute inset-0 flex flex-col items-center justify-center gap-6 z-50"
+              style={{ background: "rgba(0,0,0,0.93)" }}
             >
-              DISCONNECTED
-            </p>
-            <p className="font-mono text-sm" style={{ color: "#6a3a4a" }}>
-              Opponent has disconnected
-            </p>
-            <Button
-              data-ocid="online.disconnected.return.button"
-              onClick={async () => {
-                await cleanupOnline();
-                setScreen("picker");
-              }}
-              className="font-mono font-bold tracking-widest uppercase px-10 py-3 border"
-              style={{
-                background: "transparent",
-                borderColor: "#ff6080",
-                color: "#ff6080",
-              }}
-            >
-              ◄ RETURN TO MENU
-            </Button>
-          </div>
-        )}
+              <div className="text-5xl">📡</div>
+              <p
+                className="font-display text-3xl font-black tracking-widest uppercase"
+                style={{ color: "#ff6080", textShadow: "0 0 20px #ff6080" }}
+              >
+                DISCONNECTED
+              </p>
+              <p className="font-mono text-sm" style={{ color: "#6a3a4a" }}>
+                Opponent has disconnected
+              </p>
+              <Button
+                data-ocid="online.disconnected.return.button"
+                onClick={async () => {
+                  await cleanupOnline();
+                  setScreen("picker");
+                }}
+                className="font-mono font-bold tracking-widest uppercase px-10 py-3 border"
+                style={{
+                  background: "transparent",
+                  borderColor: "#ff6080",
+                  color: "#ff6080",
+                }}
+              >
+                ◄ RETURN TO MENU
+              </Button>
+            </div>
+          )}
 
         {gameStatus === "win" && (
           <div

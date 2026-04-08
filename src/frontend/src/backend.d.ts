@@ -9,6 +9,7 @@ export interface None {
 export type Option<T> = Some<T> | None;
 export interface RoomInfo {
     id: string;
+    gameStarted: boolean;
     hostName: string;
     gridSize: string;
     playerCount: bigint;
@@ -23,10 +24,13 @@ export interface backendInterface {
     getHighScore(): Promise<bigint>;
     getHostIce(roomId: string): Promise<Array<string>>;
     getOffer(roomId: string): Promise<string | null>;
+    hasGuest(roomId: string): Promise<boolean>;
     isGameStarted(roomId: string): Promise<boolean>;
     joinRoom(roomId: string): Promise<boolean>;
     keepAlive(roomId: string): Promise<void>;
     leaveRoom(roomId: string): Promise<void>;
+    leaveRoomAsGuest(roomId: string): Promise<void>;
+    leaveRoomAsHost(roomId: string): Promise<void>;
     listRooms(): Promise<Array<RoomInfo>>;
     pushAnswer(roomId: string, answer: string): Promise<void>;
     pushGameState(roomId: string, stateJson: string): Promise<void>;

@@ -116,9 +116,9 @@ actor {
 
   public query func listRooms() : async [RoomInfo] {
     let roomsArray = roomStore.values().toArray();
-    // Show active rooms AND rooms where game started but guest slot is empty (rejoinable)
+    // Show active rooms that haven't started yet, OR active rooms waiting for a second player
     let visibleRooms = roomsArray.filter(func(r) {
-      r.active and (not r.gameStarted or r.guestPrincipal == null)
+      r.active and not r.gameStarted
     });
     visibleRooms.map(
       func(r) {
@@ -159,7 +159,11 @@ actor {
     };
   };
 
-  // Guest leaving: only clears the guest slot, room stays active for new joiners
+  // Guest leaving:
+  //   - If game has NOT started yet (lobby phase): clear guest slot so a new
+  //     player can join from the room list.
+  //   - If game has already started (mid-game): close the room entirely so it
+  //     disappears from the list and no new joiners can take over.
   public shared ({ caller }) func leaveRoomAsGuest(roomId : Text) : async () {
     switch (findActiveRoom(roomId)) {
       case (null) {};
@@ -167,13 +171,19 @@ actor {
         switch (room.guestPrincipal) {
           case (?p) {
             if (Principal.equal(caller, p)) {
-              roomStore.add(roomId, {
-                room with
-                guestPrincipal = null;
-                // Reset signaling for next guest
-                guestAnswer = "";
-                guestIce = [];
-              });
+              if (room.gameStarted) {
+                // Mid-game leave: close the room entirely
+                roomStore.add(roomId, { room with active = false });
+              } else {
+                // Lobby leave: free the slot for another joiner
+                roomStore.add(roomId, {
+                  room with
+                  guestPrincipal = null;
+                  // Reset signaling for next guest
+                  guestAnswer = "";
+                  guestIce = [];
+                });
+              };
             };
           };
           case (null) {};
@@ -206,12 +216,18 @@ actor {
           switch (room.guestPrincipal) {
             case (?p) {
               if (Principal.equal(caller, p)) {
-                roomStore.add(roomId, {
-                  room with
-                  guestPrincipal = null;
-                  guestAnswer = "";
-                  guestIce = [];
-                });
+                if (room.gameStarted) {
+                  // Mid-game: close room entirely
+                  roomStore.add(roomId, { room with active = false });
+                } else {
+                  // Lobby: free guest slot
+                  roomStore.add(roomId, {
+                    room with
+                    guestPrincipal = null;
+                    guestAnswer = "";
+                    guestIce = [];
+                  });
+                };
               };
             };
             case (null) {};

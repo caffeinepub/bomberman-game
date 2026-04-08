@@ -91,6 +91,7 @@ export class ExternalBlob {
 }
 export interface RoomInfo {
     id: string;
+    gameStarted: boolean;
     hostName: string;
     gridSize: string;
     playerCount: bigint;
@@ -105,10 +106,13 @@ export interface backendInterface {
     getHighScore(): Promise<bigint>;
     getHostIce(roomId: string): Promise<Array<string>>;
     getOffer(roomId: string): Promise<string | null>;
+    hasGuest(roomId: string): Promise<boolean>;
     isGameStarted(roomId: string): Promise<boolean>;
     joinRoom(roomId: string): Promise<boolean>;
     keepAlive(roomId: string): Promise<void>;
     leaveRoom(roomId: string): Promise<void>;
+    leaveRoomAsGuest(roomId: string): Promise<void>;
+    leaveRoomAsHost(roomId: string): Promise<void>;
     listRooms(): Promise<Array<RoomInfo>>;
     pushAnswer(roomId: string, answer: string): Promise<void>;
     pushGameState(roomId: string, stateJson: string): Promise<void>;
@@ -233,6 +237,20 @@ export class Backend implements backendInterface {
             return from_candid_opt_n1(this._uploadFile, this._downloadFile, result);
         }
     }
+    async hasGuest(arg0: string): Promise<boolean> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.hasGuest(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.hasGuest(arg0);
+            return result;
+        }
+    }
     async isGameStarted(arg0: string): Promise<boolean> {
         if (this.processError) {
             try {
@@ -286,6 +304,34 @@ export class Backend implements backendInterface {
             }
         } else {
             const result = await this.actor.leaveRoom(arg0);
+            return result;
+        }
+    }
+    async leaveRoomAsGuest(arg0: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.leaveRoomAsGuest(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.leaveRoomAsGuest(arg0);
+            return result;
+        }
+    }
+    async leaveRoomAsHost(arg0: string): Promise<void> {
+        if (this.processError) {
+            try {
+                const result = await this.actor.leaveRoomAsHost(arg0);
+                return result;
+            } catch (e) {
+                this.processError(e);
+                throw new Error("unreachable");
+            }
+        } else {
+            const result = await this.actor.leaveRoomAsHost(arg0);
             return result;
         }
     }

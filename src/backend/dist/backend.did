@@ -1,0 +1,35 @@
+type RoomInfo = 
+ record {
+   gameStarted: bool;
+   gridSize: text;
+   hostName: text;
+   id: text;
+   playerCount: nat;
+   roomName: text;
+ };
+service : {
+  createRoom: (roomName: text, hostName: text, gridSize: text) -> (text);
+  getAndClearP2Inputs: (roomId: text) -> (vec text);
+  getAnswer: (roomId: text) -> (opt text) query;
+  getGameState: (roomId: text) -> (opt text) query;
+  getGuestIce: (roomId: text) -> (vec text) query;
+  getHighScore: () -> (nat) query;
+  getHostIce: (roomId: text) -> (vec text) query;
+  getOffer: (roomId: text) -> (opt text) query;
+  hasGuest: (roomId: text) -> (bool) query;
+  isGameStarted: (roomId: text) -> (bool) query;
+  joinRoom: (roomId: text) -> (bool);
+  keepAlive: (roomId: text) -> ();
+  leaveRoom: (roomId: text) -> ();
+  leaveRoomAsGuest: (roomId: text) -> ();
+  leaveRoomAsHost: (roomId: text) -> ();
+  listRooms: () -> (vec RoomInfo) query;
+  pushAnswer: (roomId: text, answer: text) -> ();
+  pushGameState: (roomId: text, stateJson: text) -> ();
+  pushGuestIce: (roomId: text, candidate: text) -> ();
+  pushHostIce: (roomId: text, candidate: text) -> ();
+  pushOffer: (roomId: text, offer: text) -> ();
+  startGame: (roomId: text) -> ();
+  submitP2Input: (roomId: text, inputJson: text) -> ();
+  submitScore: (score: nat) -> (nat);
+}

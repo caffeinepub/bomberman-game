@@ -12,11 +12,11 @@ import type { Principal } from '@icp-sdk/core/principal';
 
 export interface RoomInfo {
   'id' : string,
+  'gameStarted' : boolean,
   'hostName' : string,
   'gridSize' : string,
   'playerCount' : bigint,
   'roomName' : string,
-  'gameStarted' : boolean,
 }
 export interface _SERVICE {
   'createRoom' : ActorMethod<[string, string, string], string>,

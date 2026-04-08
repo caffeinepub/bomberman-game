@@ -10,11 +10,11 @@ import { IDL } from '@icp-sdk/core/candid';
 
 export const RoomInfo = IDL.Record({
   'id' : IDL.Text,
+  'gameStarted' : IDL.Bool,
   'hostName' : IDL.Text,
   'gridSize' : IDL.Text,
   'playerCount' : IDL.Nat,
   'roomName' : IDL.Text,
-  'gameStarted' : IDL.Bool,
 });
 
 export const idlService = IDL.Service({
@@ -49,11 +49,11 @@ export const idlInitArgs = [];
 export const idlFactory = ({ IDL }) => {
   const RoomInfo = IDL.Record({
     'id' : IDL.Text,
+    'gameStarted' : IDL.Bool,
     'hostName' : IDL.Text,
     'gridSize' : IDL.Text,
     'playerCount' : IDL.Nat,
     'roomName' : IDL.Text,
-    'gameStarted' : IDL.Bool,
   });
   
   return IDL.Service({
